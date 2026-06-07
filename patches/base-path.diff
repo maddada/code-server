@@ -10,6 +10,22 @@ Index: code-server/lib/vscode/src/vs/base/common/network.ts
 ===================================================================
 --- code-server.orig/lib/vscode/src/vs/base/common/network.ts
 +++ code-server/lib/vscode/src/vs/base/common/network.ts
+@@ -197,8 +197,13 @@ class RemoteAuthoritiesImpl {
+ 		this._delegate = delegate;
+ 	}
+ 
+-	setServerRootPath(product: { quality?: string; commit?: string }, serverBasePath: string | undefined): void {
+-		this._serverRootPath = paths.posix.join(serverBasePath ?? '/', getServerProductSegment(product));
++	setServerRootPath(product: { quality?: string; commit?: string; serverProductSegment?: string }, serverBasePath: string | undefined): void {
++		/**
++		 * CDXC:EditorPanes 2026-05-30-08:04:
++		 * Embedded Ghostex VS Code panes must fetch grammars, snippets, themes, and file-icon resources from the same product segment mounted by the server.
++		 * Prefer the server-supplied segment so browser fallback product metadata cannot recompute `oss-dev` while the server is serving `stable-dev`.
++		 */
++		this._serverRootPath = paths.posix.join(serverBasePath ?? '/', product.serverProductSegment ?? getServerProductSegment(product));
+ 	}
+ 
+ 	getServerRootPath(): string {
 @@ -245,7 +245,9 @@ class RemoteAuthoritiesImpl {
  		return URI.from({
  			scheme: platform.isWeb ? this._preferredWebSchema : Schemas.vscodeRemoteResource,
@@ -111,6 +127,15 @@ Index: code-server/lib/vscode/src/vs/server/node/webClientServer.ts
 ===================================================================
 --- code-server.orig/lib/vscode/src/vs/server/node/webClientServer.ts
 +++ code-server/lib/vscode/src/vs/server/node/webClientServer.ts
+@@ -17,7 +17,7 @@ import { isLinux } from '../../base/comm
+ import { ILogService, LogLevel } from '../../platform/log/common/log.js';
+ import { IServerEnvironmentService } from './serverEnvironmentService.js';
+ import { extname, dirname, join, normalize, posix, resolve } from '../../base/common/path.js';
+-import { FileAccess, connectionTokenCookieName, connectionTokenQueryName, Schemas, builtinExtensionsPath } from '../../base/common/network.js';
++import { FileAccess, connectionTokenCookieName, connectionTokenQueryName, Schemas, builtinExtensionsPath, getServerProductSegment } from '../../base/common/network.js';
+ import { generateUuid } from '../../base/common/uuid.js';
+ import { IProductService } from '../../platform/product/common/productService.js';
+ import { ServerConnectionToken, ServerConnectionTokenType } from './serverConnectionToken.js';
 @@ -265,7 +265,9 @@ export class WebClientServer {
  		};
  
@@ -142,6 +167,12 @@ Index: code-server/lib/vscode/src/vs/server/node/webClientServer.ts
  
  		const productConfiguration: Partial<Mutable<IProductConfiguration>> = {
  			codeServerVersion: this._productService.codeServerVersion,
++			/**
++			 * CDXC:EditorPanes 2026-05-30-08:04:
++			 * The embedded browser client must not infer the remote-resource route from partial product metadata.
++			 * Send the exact server product segment so `vscode-remote-resource` URLs stay aligned with the mounted code-server route.
++			 */
++			serverProductSegment: getServerProductSegment(this._productService),
 +			rootEndpoint: rootBase,
  			embedderIdentifier: 'server-distro',
  			extensionsGallery: this._webExtensionResourceUrlTemplate && this._productService.extensionsGallery ? {
@@ -245,6 +276,7 @@ Index: code-server/lib/vscode/src/vs/base/common/product.ts
  
  export interface IProductConfiguration {
  	readonly codeServerVersion?: string
++	readonly serverProductSegment?: string
 +	readonly rootEndpoint?: string
  
  	readonly version: string;
@@ -253,6 +285,72 @@ Index: code-server/lib/vscode/src/vs/code/browser/workbench/workbench.ts
 ===================================================================
 --- code-server.orig/lib/vscode/src/vs/code/browser/workbench/workbench.ts
 +++ code-server/lib/vscode/src/vs/code/browser/workbench/workbench.ts
+@@ -20,6 +20,7 @@ import { ISecretStorageProvider } from '
+ import { isFolderToOpen, isWorkspaceToOpen } from '../../../platform/window/common/window.js';
+ import type { IWorkbenchConstructionOptions, IWorkspace, IWorkspaceProvider } from '../../../workbench/browser/web.api.js';
+ import { AuthenticationSessionInfo } from '../../../workbench/services/authentication/browser/authenticationService.js';
++import { extractLocalHostUriMetaDataForPortMapping, TunnelOptions, TunnelCreationOptions } from '../../../platform/tunnel/common/tunnel.js';
+ import type { IURLCallbackProvider } from '../../../workbench/services/url/browser/urlService.js';
+ import { create } from '../../../workbench/workbench.web.main.internal.js';
+ 
+@@ -190,9 +191,58 @@ class ServerKeyedAESCrypto implements IS
+ 	}
+ }
+ 
++const localStorageSecretStorageKey = 'secrets.provider';
++
++type RemoteSecretStorageResponse = {
++	value?: string;
++	keys?: string[];
++};
++
++class RemoteSecretStorageProvider implements ISecretStorageProvider {
++
++	type: 'in-memory' | 'persisted' | 'unknown' = 'persisted';
++
++	constructor(
++		private readonly endpoint: string,
++	) { }
++
++	async get(key: string): Promise<string | undefined> {
++		const response = await this.request({ op: 'get', key });
++		return response.value;
++	}
++
++	async set(key: string, value: string): Promise<void> {
++		await this.request({ op: 'set', key, value });
++	}
++
++	async delete(key: string): Promise<void> {
++		await this.request({ op: 'delete', key });
++	}
++
++	async keys(): Promise<string[]> {
++		const response = await this.request({ op: 'keys' });
++		return response.keys ?? [];
++	}
++
++	private async request(body: Record<string, string>): Promise<RemoteSecretStorageResponse> {
++		const res = await fetch(this.endpoint, {
++			body: JSON.stringify(body),
++			credentials: 'include',
++			headers: { 'Content-Type': 'application/json' },
++			method: 'POST',
++		});
++		if (!res.ok) {
++			throw new Error(`Secret storage request failed: ${res.status} ${res.statusText}`);
++		}
++		return res.json();
++	}
++}
++
+ export class LocalStorageSecretStorageProvider implements ISecretStorageProvider {
+ 
+-	private readonly storageKey = 'secrets.provider';
++	private readonly storageKey = localStorageSecretStorageKey;
+ 
+ 	private secretsPromise: Promise<Record<string, string>>;
+ 
 @@ -339,7 +339,8 @@ class LocalStorageURLCallbackProvider ex
  			this.startListening();
  		}
@@ -281,17 +379,70 @@ Index: code-server/lib/vscode/src/vs/code/browser/workbench/workbench.ts
  (function () {
  
  	// Find config by checking for DOM
-@@ -604,8 +594,8 @@ function readCookie(name: string): strin
+@@ -604,8 +595,19 @@ function readCookie(name: string): strin
  	if (!configElement || !configElementAttribute) {
  		throw new Error('Missing web configuration element');
  	}
 -	const config: IWorkbenchConstructionOptions & { folderUri?: UriComponents; workspaceUri?: UriComponents; callbackRoute: string } = JSON.parse(configElementAttribute);
 -	const secretStorageKeyPath = readCookie('vscode-secret-key-path');
 +	const config: IWorkbenchConstructionOptions & { folderUri?: UriComponents; workspaceUri?: UriComponents; callbackRoute: string } = { ...JSON.parse(configElementAttribute), remoteAuthority: location.host }
-+	const secretStorageKeyPath = (window.location.pathname + "/mint-key").replace(/\/\/+/g, "/");
++	/*
++	 * CDXC:GitHubAuthentication 2026-05-17-02:48:
++	 * Embedded code-server must keep GitHub OAuth sessions across ghostex restarts without persisting tokens in browser origin storage.
++	 * Use a same-origin server-side secret-storage endpoint backed by the persistent --user-data-dir because the browser workbench otherwise falls back to in-memory storage when no embedder provider is supplied.
++	 * Clear stale browser-side secret payloads from the earlier localStorage-backed implementation so GitHub tokens are not retained in CEF origin storage.
++	 */
++	const secretStorageKeyPath: string | undefined = undefined;
++	const remoteSecretStoragePath = (window.location.pathname.replace(/\/?$/, '/') + '.code-server-secret-storage').replace(/\/\/+/g, '/');
++	if (config.remoteAuthority) {
++		localStorage.removeItem(localStorageSecretStorageKey);
++	}
  	const secretStorageCrypto = secretStorageKeyPath && ServerKeyedAESCrypto.supported()
  		? new ServerKeyedAESCrypto(secretStorageKeyPath) : new TransparentCrypto();
  
+@@ -616,8 +618,41 @@ function readCookie(name: string): strin
+ 		settingsSyncOptions: config.settingsSyncOptions ? { enabled: config.settingsSyncOptions.enabled, } : undefined,
+ 		workspaceProvider: WorkspaceProvider.create(config),
+ 		urlCallbackProvider: new LocalStorageURLCallbackProvider(config.callbackRoute),
++		resolveExternalUri: (uri: URI): Promise<URI> => {
++			let resolvedUri = uri
++			const localhostMatch = extractLocalHostUriMetaDataForPortMapping(resolvedUri)
++			if (localhostMatch && resolvedUri.authority !== location.host) {
++				if (config.productConfiguration && config.productConfiguration.proxyEndpointTemplate) {
++					const renderedTemplate = config.productConfiguration.proxyEndpointTemplate
++						.replace('{{port}}', localhostMatch.port.toString())
++						.replace('{{host}}', window.location.host)
++					resolvedUri = URI.parse(new URL(renderedTemplate, window.location.href).toString())
++				} else {
++					throw new Error(`Failed to resolve external URI: ${uri.toString()}. Could not determine base url because productConfiguration missing.`)
++				}
++			}
++			// If not localhost, return unmodified.
++			return Promise.resolve(resolvedUri)
++		},
++		tunnelProvider: {
++			tunnelFactory: (tunnelOptions: TunnelOptions, tunnelCreationOptions: TunnelCreationOptions) => {
++				const onDidDispose: Emitter<void> = new Emitter();
++				let isDisposed = false;
++				return Promise.resolve({
++					remoteAddress: tunnelOptions.remoteAddress,
++					localAddress: `localhost:${tunnelOptions.remoteAddress.port}`,
++					onDidDispose: onDidDispose.event,
++					dispose: () => {
++						if (!isDisposed) {
++							isDisposed = true;
++							onDidDispose.fire();
++						}
++					}
++				})
++			}
++		},
+ 		secretStorageProvider: config.remoteAuthority && !secretStorageKeyPath
+-			? undefined /* with a remote without embedder-preferred storage, store on the remote */
++			? new RemoteSecretStorageProvider(remoteSecretStoragePath)
+ 			: new LocalStorageSecretStorageProvider(secretStorageCrypto),
+ 	});
+ })();
 Index: code-server/lib/vscode/src/vs/platform/extensionResourceLoader/common/extensionResourceLoader.ts
 ===================================================================
 --- code-server.orig/lib/vscode/src/vs/platform/extensionResourceLoader/common/extensionResourceLoader.ts

@@ -1,5 +1,4 @@
 import { logger } from "@coder/logger"
-import * as crypto from "crypto"
 import * as express from "express"
 import { promises as fs } from "fs"
 import * as http from "http"
@@ -17,6 +16,65 @@ import { type WebsocketRequest, Router as WsRouter } from "../wsRouter"
 export const router = express.Router()
 
 export const wsRouter = WsRouter()
+
+type SecretStorageRequest = {
+  op?: unknown
+  key?: unknown
+  value?: unknown
+}
+
+type SecretStorageData = Record<string, string>
+
+const secretStorageFileName = "code-server-secret-storage.json"
+const maxSecretKeyLength = 8192
+let secretStorageQueue = Promise.resolve()
+
+const getSecretStoragePath = (req: express.Request): string => {
+  return path.join(req.args["user-data-dir"], secretStorageFileName)
+}
+
+const isValidSecretKey = (key: unknown): key is string => {
+  return typeof key === "string" && key.length > 0 && key.length <= maxSecretKeyLength
+}
+
+const readSecretStorage = async (req: express.Request): Promise<SecretStorageData> => {
+  const secretStoragePath = getSecretStoragePath(req)
+  try {
+    const raw = await fs.readFile(secretStoragePath, "utf8")
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("secret storage file must contain an object")
+    }
+    const entries = Object.entries(parsed)
+    if (entries.some(([, value]) => typeof value !== "string")) {
+      throw new Error("secret storage file must only contain string values")
+    }
+    return Object.fromEntries(entries) as SecretStorageData
+  } catch (error: any) {
+    if (error.code === "ENOENT") {
+      return {}
+    }
+    throw error
+  }
+}
+
+const writeSecretStorage = async (req: express.Request, data: SecretStorageData): Promise<void> => {
+  const secretStoragePath = getSecretStoragePath(req)
+  const temporaryPath = `${secretStoragePath}.${process.pid}.tmp`
+  await fs.mkdir(path.dirname(secretStoragePath), { recursive: true, mode: 0o700 })
+  await fs.writeFile(temporaryPath, JSON.stringify(data, null, 2), { mode: 0o600 })
+  await fs.rename(temporaryPath, secretStoragePath)
+  await fs.chmod(secretStoragePath, 0o600)
+}
+
+const withSecretStorage = async <T>(operation: () => Promise<T>): Promise<T> => {
+  const run = secretStorageQueue.then(operation, operation)
+  secretStorageQueue = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  return run
+}
 
 /**
  * The API of VS Code's web client server.  code-server delegates requests to VS
@@ -209,32 +267,59 @@ router.get("/manifest.json", async (req, res) => {
   )
 })
 
-let mintKeyPromise: Promise<Buffer> | undefined
-router.post("/mint-key", async (req, res) => {
-  if (!mintKeyPromise) {
-    mintKeyPromise = new Promise(async (resolve) => {
-      const keyPath = path.join(req.args["user-data-dir"], "serve-web-key-half")
-      logger.debug(`Reading server web key half from ${keyPath}`)
-      try {
-        resolve(await fs.readFile(keyPath))
-        return
-      } catch (error: any) {
-        if (error.code !== "ENOENT") {
-          logError(logger, `read ${keyPath}`, error)
-        }
-      }
-      // VS Code wants 256 bits.
-      const key = crypto.randomBytes(32)
-      try {
-        await fs.writeFile(keyPath, key)
-      } catch (error: any) {
-        logError(logger, `write ${keyPath}`, error)
-      }
-      resolve(key)
-    })
+router.post("/.code-server-secret-storage", ensureOrigin, ensureAuthenticated, async (req, res): Promise<void> => {
+  /*
+   * CDXC:GitHubAuthentication 2026-05-17-02:48:
+   * GitHub OAuth sessions in embedded code-server must persist across ghostex restarts without storing token material in browser localStorage.
+   * Keep VS Code SecretStorage on a same-origin, authenticated server endpoint backed by --user-data-dir and owner-only file permissions so extension hosts share the same persisted session store.
+   */
+  const body = req.body as SecretStorageRequest | undefined
+  const op = body?.op
+
+  if (op === "keys") {
+    const keys = await withSecretStorage(async () => Object.keys(await readSecretStorage(req)))
+    res.json({ keys })
+    return
   }
-  const key = await mintKeyPromise
-  res.end(key)
+
+  if (!isValidSecretKey(body?.key)) {
+    res.status(400).json({ error: "Invalid secret storage key" })
+    return
+  }
+
+  const key = body.key
+  if (op === "get") {
+    const value = await withSecretStorage(async () => (await readSecretStorage(req))[key])
+    res.json({ value })
+    return
+  }
+
+  if (op === "set") {
+    if (typeof body.value !== "string") {
+      res.status(400).json({ error: "Invalid secret storage value" })
+      return
+    }
+    const value = body.value
+    await withSecretStorage(async () => {
+      const data = await readSecretStorage(req)
+      data[key] = value
+      await writeSecretStorage(req, data)
+    })
+    res.json({})
+    return
+  }
+
+  if (op === "delete") {
+    await withSecretStorage(async () => {
+      const data = await readSecretStorage(req)
+      delete data[key]
+      await writeSecretStorage(req, data)
+    })
+    res.json({})
+    return
+  }
+
+  res.status(400).json({ error: "Invalid secret storage operation" })
 })
 
 router.all(/.*/, ensureAuthenticated, ensureVSCodeLoaded, async (req, res) => {

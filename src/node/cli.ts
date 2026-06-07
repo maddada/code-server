@@ -95,6 +95,8 @@ export interface UserProvidedArgs extends UserProvidedCodeArgs {
   "app-name"?: string
   "welcome-text"?: string
   "abs-proxy-base-path"?: string
+  "link-vscode-user-config"?: boolean
+  "vscode-user-config-dir"?: string
   i18n?: string
   "idle-timeout-seconds"?: number
   /* Positional arguments. */
@@ -306,6 +308,17 @@ export const options: Options<Required<UserProvidedArgs>> = {
   "abs-proxy-base-path": {
     type: "string",
     description: "The base path to prefix to all absproxy requests",
+  },
+  "link-vscode-user-config": {
+    type: "boolean",
+    description:
+      "Symlink settings.json, keybindings.json, snippets, mcp.json, and tasks.json from the local VS Code user config.",
+  },
+  "vscode-user-config-dir": {
+    type: "string",
+    path: true,
+    description:
+      "Path to the VS Code user config directory used by --link-vscode-user-config. Defaults to the stable VS Code profile.",
   },
   i18n: {
     type: "string",

@@ -114,6 +114,9 @@ describe("parser", () => {
 
           "--skip-auth-preflight",
 
+          "--link-vscode-user-config",
+          ["--vscode-user-config-dir", "path/to/vscode/user"],
+
           ["--session-socket", "/tmp/override-code-server-ipc-socket"],
 
           ["--reconnection-grace-time", "86400"],
@@ -157,6 +160,8 @@ describe("parser", () => {
       "reconnection-grace-time": "86400",
       "abs-proxy-base-path": "/codeserver/app1",
       "skip-auth-preflight": true,
+      "link-vscode-user-config": true,
+      "vscode-user-config-dir": path.resolve("path/to/vscode/user"),
     })
   })
 

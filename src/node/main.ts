@@ -11,6 +11,7 @@ import { loadCustomStrings } from "./i18n"
 import { register } from "./routes"
 import { VSCodeModule } from "./routes/vscode"
 import { isDirectory, open } from "./util"
+import { linkVSCodeUserConfig } from "./vscodeUserConfig"
 import { wrapper } from "./wrapper"
 
 /**
@@ -132,6 +133,13 @@ export const runCodeServer = async (
 
   logger.info(`Using user-data-dir ${args["user-data-dir"]}`)
   logger.debug(`Using extensions-dir ${args["extensions-dir"]}`)
+
+  if (args["link-vscode-user-config"]) {
+    await linkVSCodeUserConfig({
+      sourceDir: args["vscode-user-config-dir"],
+      userDataDir: args["user-data-dir"],
+    })
+  }
 
   if (args.auth === AuthType.Password && !args.password && !args["hashed-password"]) {
     throw new Error(
