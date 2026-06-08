@@ -34,17 +34,23 @@ copy-bin-script() {
   fix-bin-script "$1"
 }
 
-install-scoped-npm-tarball() {
+install-npm-tarball() {
   local package_spec="$1"
   local package_version="$2"
   local target_dir="$3"
-  local package_scope="${package_spec%%/*}"
-  local package_name="${package_spec#*/}"
+  local package_name="$package_spec"
+  local package_url="https://registry.npmjs.org/$package_name/-/$package_name-$package_version.tgz"
   local package_tmp_dir
   package_tmp_dir=$(mktemp -d)
 
+  if [[ $package_spec == @*/* ]]; then
+    local package_scope="${package_spec%%/*}"
+    package_name="${package_spec#*/}"
+    package_url="https://registry.npmjs.org/$package_scope/$package_name/-/$package_name-$package_version.tgz"
+  fi
+
   echo "Installing $package_spec@$package_version for architecture-specific packaging..."
-  if ! curl -fsSL "https://registry.npmjs.org/$package_scope/$package_name/-/$package_name-$package_version.tgz" |
+  if ! curl -fsSL "$package_url" |
     tar -xz --strip-components=1 -C "$package_tmp_dir"; then
     rm -rf "$package_tmp_dir"
     return 1
@@ -85,7 +91,41 @@ NODE
   local esbuild_target_dir="$copilot_dir/node_modules/$esbuild_package"
 
   # CDXC:CodeServerRuntime 2026-06-08-14:42: Ghostex release builds package both macOS architectures on Apple Silicon. The Copilot extension build runs under the architecture-specific bundled Node, so ensure esbuild's native optional package matches that Node before packaging. Fetch the package directly because npm can hang when invoked under the translated x86_64 Node runtime during local release builds.
-  install-scoped-npm-tarball "$esbuild_package" "$esbuild_version" "$esbuild_target_dir"
+  install-npm-tarball "$esbuild_package" "$esbuild_version" "$esbuild_target_dir"
+}
+
+ensure-vscode-esbuild-platform() {
+  local esbuild_package
+  esbuild_package=$(node <<'NODE'
+const packages = new Map([
+  ['darwin-x64', '@esbuild/darwin-x64'],
+  ['darwin-arm64', '@esbuild/darwin-arm64'],
+  ['linux-x64', '@esbuild/linux-x64'],
+  ['linux-arm64', '@esbuild/linux-arm64'],
+  ['win32-x64', '@esbuild/win32-x64'],
+  ['win32-arm64', '@esbuild/win32-arm64'],
+]);
+process.stdout.write(packages.get(`${process.platform}-${process.arch}`) ?? '');
+NODE
+)
+
+  local esbuild_version
+  esbuild_version=$(node -p "require('./build/package.json').devDependencies.esbuild")
+
+  # CDXC:CodeServerRuntime 2026-06-08-14:57: VS Code core-ci bundles built-in extensions through the root esbuild dependency, which is absent after release dependency pruning. Install the root esbuild package and its active-architecture native optional package before extension bundling.
+  if [[ ! -d node_modules/esbuild ]]; then
+    install-npm-tarball "esbuild" "$esbuild_version" "node_modules/esbuild"
+  fi
+
+  if [[ -z $esbuild_package ]]; then
+    return
+  fi
+
+  if [[ -d "node_modules/$esbuild_package" ]]; then
+    return
+  fi
+
+  install-npm-tarball "$esbuild_package" "$esbuild_version" "node_modules/$esbuild_package"
 }
 
 ensure-typescript-native-platform() {
@@ -116,7 +156,7 @@ NODE
   tsgo_version=$(node -p "require('./node_modules/@typescript/native-preview/package.json').version")
 
   # CDXC:CodeServerRuntime 2026-06-08-14:52: VS Code core-ci invokes tsgo under the architecture-specific bundled Node during Ghostex release packaging. Install the matching TypeScript native preview package so cross-arch release builds do not depend on the host machine's arm64-only install tree.
-  install-scoped-npm-tarball "$tsgo_package" "$tsgo_version" "node_modules/$tsgo_package"
+  install-npm-tarball "$tsgo_package" "$tsgo_version" "node_modules/$tsgo_package"
 }
 
 main() {
@@ -198,6 +238,7 @@ EOF
   ensure-copilot-esbuild-platform
   VSCODE_QUALITY=stable npm run gulp compile-copilot-extension-full-build
 
+  ensure-vscode-esbuild-platform
   ensure-typescript-native-platform
   npm run gulp core-ci
   npm run gulp "vscode-reh-web-$VSCODE_TARGET${MINIFY:+-min}-ci"
