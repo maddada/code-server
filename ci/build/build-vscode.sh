@@ -159,6 +159,23 @@ NODE
   install-npm-tarball "$tsgo_package" "$tsgo_version" "node_modules/$tsgo_package"
 }
 
+ghostex_vscode_reh_ripgrep_patch_applied=0
+
+apply-ghostex-vscode-build-patches() {
+  # CDXC:CodeServerRuntime 2026-06-08-16:05: Ghostex's local release wrapper builds the nested VS Code checkout directly, so apply the tracked REH ripgrep packaging patch before gulp runs instead of relying on a developer's quilt-applied working tree.
+  patch --batch -N -p1 < patches/reh-ripgrep-bin.diff
+  ghostex_vscode_reh_ripgrep_patch_applied=1
+}
+
+cleanup-ghostex-vscode-build-edits() {
+  if [[ $ghostex_vscode_reh_ripgrep_patch_applied == 1 ]]; then
+    patch --batch -R -p1 < patches/reh-ripgrep-bin.diff >/dev/null 2>&1 || true
+  fi
+
+  git -C lib/vscode checkout -- product.json >/dev/null 2>&1 || true
+  rm -f lib/vscode/product.original.json
+}
+
 main() {
   cd "$(dirname "${0}")/../.."
 
@@ -173,6 +190,9 @@ main() {
   # issues where the browser keeps using outdated code.
   export BUILD_SOURCEVERSION
   BUILD_SOURCEVERSION=$(git rev-parse HEAD)
+
+  apply-ghostex-vscode-build-patches
+  trap cleanup-ghostex-vscode-build-edits EXIT
 
   pushd lib/vscode
 
