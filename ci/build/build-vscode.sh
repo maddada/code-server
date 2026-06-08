@@ -34,6 +34,50 @@ copy-bin-script() {
   fix-bin-script "$1"
 }
 
+ensure-copilot-esbuild-platform() {
+  local copilot_dir="extensions/copilot"
+  local esbuild_package
+  esbuild_package=$(node <<'NODE'
+const packages = new Map([
+  ['darwin-x64', '@esbuild/darwin-x64'],
+  ['darwin-arm64', '@esbuild/darwin-arm64'],
+  ['linux-x64', '@esbuild/linux-x64'],
+  ['linux-arm64', '@esbuild/linux-arm64'],
+  ['win32-x64', '@esbuild/win32-x64'],
+  ['win32-arm64', '@esbuild/win32-arm64'],
+]);
+process.stdout.write(packages.get(`${process.platform}-${process.arch}`) ?? '');
+NODE
+)
+
+  if [[ -z $esbuild_package ]]; then
+    return
+  fi
+
+  if [[ -d "$copilot_dir/node_modules/$esbuild_package" ]]; then
+    return
+  fi
+
+  local esbuild_version
+  esbuild_version=$(node -p "require('./$copilot_dir/node_modules/esbuild/package.json').version")
+
+  local esbuild_target_name="${esbuild_package#@esbuild/}"
+  local esbuild_target_dir="$copilot_dir/node_modules/$esbuild_package"
+  local esbuild_tmp_dir
+  esbuild_tmp_dir=$(mktemp -d)
+
+  # CDXC:CodeServerRuntime 2026-06-08-14:42: Ghostex release builds package both macOS architectures on Apple Silicon. The Copilot extension build runs under the architecture-specific bundled Node, so ensure esbuild's native optional package matches that Node before packaging. Fetch the package directly because npm can hang when invoked under the translated x86_64 Node runtime during local release builds.
+  echo "Installing $esbuild_package@$esbuild_version for Copilot esbuild packaging..."
+  if ! curl -fsSL "https://registry.npmjs.org/@esbuild/$esbuild_target_name/-/$esbuild_target_name-$esbuild_version.tgz" |
+    tar -xz --strip-components=1 -C "$esbuild_tmp_dir"; then
+    rm -rf "$esbuild_tmp_dir"
+    return 1
+  fi
+  rm -rf "$esbuild_target_dir"
+  mkdir -p "$(dirname "$esbuild_target_dir")"
+  mv "$esbuild_tmp_dir" "$esbuild_target_dir"
+}
+
 main() {
   cd "$(dirname "${0}")/../.."
 
@@ -110,6 +154,7 @@ EOF
   ) > product.json
 
 
+  ensure-copilot-esbuild-platform
   VSCODE_QUALITY=stable npm run gulp compile-copilot-extension-full-build
 
   npm run gulp core-ci
