@@ -65,6 +65,8 @@ main() {
   # This needs to be done before building as Code will read this file and embed
   # it into the client-side code.
   git checkout product.json             # Reset in case the script exited early.
+  # CDXC:CodeServerRuntime 2026-06-08-12:17: Ghostex release builds invoke this code-server packaging path from the app build. Keep the nested VS Code checkout clean after successful builds by removing the temporary jq source copy that would otherwise leave code-server dirty before release commits.
+  rm -f product.original.json
   cp product.json product.original.json # Since jq has no inline edit.
   jq --slurp '.[0] * .[1]' product.original.json <(
     cat << EOF
@@ -117,6 +119,7 @@ EOF
   # commit (the dev client will use `oss-dev` but the dev server will still use
   # product.json which will have `stable-$commit`).
   git checkout product.json
+  rm -f product.original.json
 
   popd
 

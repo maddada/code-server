@@ -1,0 +1,27 @@
+Copy ripgrep bin for REH Copilot shim
+
+Ghostex packages code-server's REH web target directly into the macOS app. That
+target can carry @vscode/ripgrep package metadata without the postinstall-created
+bin directory, so copy the source checkout's bin before creating Copilot's shim.
+
+Index: code-server/lib/vscode/build/gulpfile.reh.ts
+===================================================================
+--- code-server.orig/lib/vscode/build/gulpfile.reh.ts
++++ code-server/lib/vscode/build/gulpfile.reh.ts
+@@ -472,6 +472,16 @@ function prepareCopilotRipgrepShimTaskRE
+ 	return async () => {
+ 		const outputDir = path.join(BUILD_ROOT, destinationFolderName);
+ 		const nodeModulesDir = path.join(outputDir, 'node_modules');
++		const outputRipgrepBin = path.join(nodeModulesDir, '@vscode', 'ripgrep', 'bin');
++		const sourceRipgrepBin = path.join(REPO_ROOT, 'node_modules', '@vscode', 'ripgrep', 'bin');
++		/*
++		 * CDXC:CodeServerRuntime 2026-06-08-12:17:
++		 * Ghostex release builds package code-server's darwin REH web target into the macOS app. That target can carry @vscode/ripgrep metadata without the postinstall-created bin directory, so copy the built source checkout's ripgrep bin before materializing Copilot's shim instead of failing the app-resource build.
++		 */
++		if (!fs.existsSync(outputRipgrepBin) && fs.existsSync(sourceRipgrepBin)) {
++			fs.mkdirSync(outputRipgrepBin, { recursive: true });
++			fs.cpSync(sourceRipgrepBin, outputRipgrepBin, { recursive: true });
++		}
+ 
+ 		const builtInCopilotExtensionDir = path.join(outputDir, 'extensions', 'copilot');
+ 		prepareBuiltInCopilotRipgrepShim(platform, arch, builtInCopilotExtensionDir, nodeModulesDir);
