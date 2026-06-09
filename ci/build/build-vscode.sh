@@ -5,6 +5,8 @@ set -euo pipefail
 
 # MINIFY controls whether a minified version of vscode is built.
 MINIFY=${MINIFY-true}
+CODE_SERVER_BUILD_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+GHOSTEX_REH_RIPGREP_PATCH="$CODE_SERVER_BUILD_ROOT/patches/reh-ripgrep-bin.diff"
 
 fix-bin-script() {
   local script="lib/vscode-reh-web-$VSCODE_TARGET/bin/$1"
@@ -159,25 +161,98 @@ NODE
   install-npm-tarball "$tsgo_package" "$tsgo_version" "node_modules/$tsgo_package"
 }
 
+vscode-ripgrep-node-arch() {
+  case "$VSCODE_TARGET" in
+    darwin-arm64)
+      printf 'arm64\n'
+      ;;
+    darwin-x64)
+      printf 'x64\n'
+      ;;
+    *)
+      node -p 'process.arch'
+      ;;
+  esac
+}
+
+vscode-ripgrep-macho-arch() {
+  case "$(vscode-ripgrep-node-arch)" in
+    arm64)
+      printf 'arm64\n'
+      ;;
+    x64)
+      printf 'x86_64\n'
+      ;;
+  esac
+}
+
+ensure-vscode-ripgrep-platform() {
+  local ripgrep_bin="node_modules/@vscode/ripgrep/bin/rg"
+  local expected_arch
+  expected_arch="$(vscode-ripgrep-macho-arch)"
+
+  if [[ -f "$ripgrep_bin" ]] && /usr/bin/lipo -archs "$ripgrep_bin" 2>/dev/null | tr ' ' '\n' | grep -Fx "$expected_arch" >/dev/null; then
+    return
+  fi
+
+  # CDXC:CodeServerRuntime 2026-06-09-17:06: Ghostex builds arm64 and x86_64 VS Code REH payloads on the same machine. Materialize @vscode/ripgrep for the target architecture before gulp copies it into the packaged runtime so file search never ships with a missing or opposite-arch rg binary.
+  rm -rf node_modules/@vscode/ripgrep/bin
+  env npm_config_arch="$(vscode-ripgrep-node-arch)" node node_modules/@vscode/ripgrep/lib/postinstall.js --force
+
+  if [[ ! -f "$ripgrep_bin" ]] || ! /usr/bin/lipo -archs "$ripgrep_bin" 2>/dev/null | tr ' ' '\n' | grep -Fx "$expected_arch" >/dev/null; then
+    echo "Expected @vscode/ripgrep to contain $expected_arch after postinstall: $ripgrep_bin" >&2
+    exit 1
+  fi
+}
+
+ensure-github-token-for-vscode-build() {
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    return
+  fi
+  if ! command -v gh >/dev/null 2>&1; then
+    return
+  fi
+
+  local gh_token
+  gh_token="$(gh auth token -h github.com 2>/dev/null || gh auth token 2>/dev/null || true)"
+  if [[ -n "$gh_token" ]]; then
+    # CDXC:CodeServerRuntime 2026-06-09-17:06: VS Code core-ci fetches built-in extension artifacts and @vscode/ripgrep releases from GitHub. Use the owner's authenticated gh token when no explicit GITHUB_TOKEN is present so local starts and releases do not fail from unauthenticated API rate limits while still avoiding logged secret material.
+    export GITHUB_TOKEN="$gh_token"
+  fi
+}
+
 ghostex_vscode_reh_ripgrep_patch_applied=0
 
 apply-ghostex-vscode-build-patches() {
   # CDXC:CodeServerRuntime 2026-06-08-16:05: Ghostex's local release wrapper builds the nested VS Code checkout directly, so apply the tracked REH ripgrep packaging patch before gulp runs instead of relying on a developer's quilt-applied working tree.
-  patch --batch -N -p1 < patches/reh-ripgrep-bin.diff
-  ghostex_vscode_reh_ripgrep_patch_applied=1
+  if patch --batch --dry-run -d "$CODE_SERVER_BUILD_ROOT" -N -p1 < "$GHOSTEX_REH_RIPGREP_PATCH" >/dev/null 2>&1; then
+    patch --batch -d "$CODE_SERVER_BUILD_ROOT" -N -p1 < "$GHOSTEX_REH_RIPGREP_PATCH"
+    ghostex_vscode_reh_ripgrep_patch_applied=1
+    return
+  fi
+
+  if patch --batch --dry-run -d "$CODE_SERVER_BUILD_ROOT" -R -p1 < "$GHOSTEX_REH_RIPGREP_PATCH" >/dev/null 2>&1; then
+    # CDXC:CodeServerRuntime 2026-06-09-17:06: A failed prior build can leave the temporary REH ripgrep patch applied before the cleanup trap is registered. Treat an already-applied patch as build-owned state so cleanup restores the nested VS Code checkout instead of failing the next app build.
+    echo "Ghostex REH ripgrep patch is already applied; cleanup will restore it after packaging."
+    ghostex_vscode_reh_ripgrep_patch_applied=1
+    return
+  fi
+
+  patch --batch --dry-run -d "$CODE_SERVER_BUILD_ROOT" -N -p1 < "$GHOSTEX_REH_RIPGREP_PATCH"
 }
 
 cleanup-ghostex-vscode-build-edits() {
   if [[ $ghostex_vscode_reh_ripgrep_patch_applied == 1 ]]; then
-    patch --batch -R -p1 < patches/reh-ripgrep-bin.diff >/dev/null 2>&1 || true
+    patch --batch -d "$CODE_SERVER_BUILD_ROOT" -R -p1 < "$GHOSTEX_REH_RIPGREP_PATCH" >/dev/null 2>&1 || true
   fi
 
-  git -C lib/vscode checkout -- product.json >/dev/null 2>&1 || true
-  rm -f lib/vscode/product.original.json
+  git -C "$CODE_SERVER_BUILD_ROOT/lib/vscode" checkout -- product.json >/dev/null 2>&1 || true
+  rm -f "$CODE_SERVER_BUILD_ROOT/lib/vscode/product.original.json"
+  rm -f "$CODE_SERVER_BUILD_ROOT/lib/vscode/build/gulpfile.reh.ts.rej"
 }
 
 main() {
-  cd "$(dirname "${0}")/../.."
+  cd "$CODE_SERVER_BUILD_ROOT"
 
   source ./ci/lib.sh
 
@@ -190,9 +265,10 @@ main() {
   # issues where the browser keeps using outdated code.
   export BUILD_SOURCEVERSION
   BUILD_SOURCEVERSION=$(git rev-parse HEAD)
+  ensure-github-token-for-vscode-build
 
-  apply-ghostex-vscode-build-patches
   trap cleanup-ghostex-vscode-build-edits EXIT
+  apply-ghostex-vscode-build-patches
 
   pushd lib/vscode
 
@@ -258,6 +334,7 @@ EOF
   ensure-copilot-esbuild-platform
   VSCODE_QUALITY=stable npm run gulp compile-copilot-extension-full-build
 
+  ensure-vscode-ripgrep-platform
   ensure-vscode-esbuild-platform
   ensure-typescript-native-platform
   npm run gulp core-ci
