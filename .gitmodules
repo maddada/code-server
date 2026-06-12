@@ -1,3 +1,5 @@
+# CDXC:CodeServerSubmodule 2026-06-12-08:58: The embedded VS Code submodule includes Ghostex code-server runtime patches that do not exist in microsoft/vscode, so recursive clones must fetch lib/vscode from the Ghostex-owned fork where the pinned commit is published.
 [submodule "lib/vscode"]
 	path = lib/vscode
-	url = https://github.com/microsoft/vscode
+	url = https://github.com/maddada/vscode.git
+	branch = ghostex/code-server-web-runtime
