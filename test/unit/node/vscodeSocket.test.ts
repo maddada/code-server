@@ -22,16 +22,30 @@ describe("makeEditorSessionManagerServer", () => {
     tmpDirPath = await tmpdir(testName)
   })
 
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
   it("warns if socket cannot be created", async () => {
     jest.spyOn(app, "listen").mockImplementation(() => {
       throw new Error()
     })
-    const server = await makeEditorSessionManagerServer(
+    const result = await makeEditorSessionManagerServer(
       `${tmpDirPath}/code-server-ipc.sock`,
       new EditorSessionManager(),
     )
     expect(logger.warn).toHaveBeenCalledWith(`Could not create socket at ${tmpDirPath}/code-server-ipc.sock`)
-    server.close()
+    expect(result.promptEditorIpcReady).toBe(false)
+    result.server.close()
+  })
+
+  it("reports readiness only after binding the configured socket", async () => {
+    const socketPath = `/tmp/code-server-session-${process.pid}.sock`
+    const result = await makeEditorSessionManagerServer(socketPath, new EditorSessionManager())
+
+    expect(result.promptEditorIpcReady).toBe(true)
+    expect(result.server.address()).toBe(socketPath)
+    result.server.close()
   })
 })
 

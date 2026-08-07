@@ -35,7 +35,7 @@ interface GetSessionResponse {
 export async function makeEditorSessionManagerServer(
   codeServerSocketPath: string,
   editorSessionManager: EditorSessionManager,
-): Promise<http.Server> {
+): Promise<{ server: http.Server; promptEditorIpcReady: boolean }> {
   const router = express()
 
   router.use(express.json())
@@ -79,7 +79,10 @@ export async function makeEditorSessionManagerServer(
   } catch (e) {
     logger.warn(`Could not create socket at ${codeServerSocketPath}`)
   }
-  return server
+  return {
+    server,
+    promptEditorIpcReady: server.address() === codeServerSocketPath,
+  }
 }
 
 export class EditorSessionManager {

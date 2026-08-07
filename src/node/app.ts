@@ -24,6 +24,8 @@ export interface App extends Disposable {
   server: http.Server
   /** Handles requests to the editor session management API. */
   editorSessionManagerServer: http.Server
+  /** True only after the configured editor session socket has been bound. */
+  promptEditorIpcReady: boolean
 }
 
 const isSocketOpts = (opts: ListenOptions): opts is SocketOptions => {
@@ -88,14 +90,22 @@ export const createApp = async (args: DefaultedArgs): Promise<App> => {
   handleUpgrade(wsRouter, server)
 
   const editorSessionManager = new EditorSessionManager()
-  const editorSessionManagerServer = await makeEditorSessionManagerServer(args["session-socket"], editorSessionManager)
+  const editorSessionManagerResult = await makeEditorSessionManagerServer(args["session-socket"], editorSessionManager)
+  const editorSessionManagerServer = editorSessionManagerResult.server
   const disposeEditorSessionManagerServer = disposer(editorSessionManagerServer)
 
   const dispose = async () => {
     await Promise.all([disposeServer(), disposeEditorSessionManagerServer()])
   }
 
-  return { router, wsRouter, server, dispose, editorSessionManagerServer }
+  return {
+    router,
+    wsRouter,
+    server,
+    dispose,
+    editorSessionManagerServer,
+    promptEditorIpcReady: editorSessionManagerResult.promptEditorIpcReady,
+  }
 }
 
 /**

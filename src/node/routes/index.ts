@@ -75,6 +75,7 @@ export const register = async (
     // Add common variables routes can use.
     req.args = args
     req.heart = heart
+    req.promptEditorIpcReady = app.promptEditorIpcReady
     req.settings = settings
     req.updater = updater
     req.cookieSessionName = cookieSessionName

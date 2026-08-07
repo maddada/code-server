@@ -38,6 +38,7 @@ declare global {
     export interface Request {
       args: DefaultedArgs
       heart: Heart
+      promptEditorIpcReady: boolean
       settings: SettingsProvider<CoderSettings>
       updater: UpdateProvider
       cookieSessionName: string

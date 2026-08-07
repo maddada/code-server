@@ -7,6 +7,7 @@ router.get("/", (req, res) => {
   res.json({
     status: req.heart.alive() ? "alive" : "expired",
     lastHeartbeat: req.heart.lastHeartbeat,
+    promptEditorIpcReady: req.promptEditorIpcReady,
   })
 })
 
@@ -20,6 +21,7 @@ wsRouter.ws("/", async (req) => {
           event: "health",
           status: req.heart.alive() ? "alive" : "expired",
           lastHeartbeat: req.heart.lastHeartbeat,
+          promptEditorIpcReady: req.promptEditorIpcReady,
         }),
       )
     })
