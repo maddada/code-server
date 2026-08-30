@@ -11,6 +11,7 @@ import { loadCustomStrings } from "./i18n"
 import { register } from "./routes"
 import { VSCodeModule } from "./routes/vscode"
 import { isDirectory, open } from "./util"
+import { EditorSessionManagerClient, OpenCommandPipeArgs, sendOpenCommand } from "./vscodeSocket"
 import { linkVSCodeUserConfig } from "./vscodeUserConfig"
 import { wrapper } from "./wrapper"
 
@@ -24,27 +25,6 @@ export const shouldSpawnCliProcess = (args: UserProvidedArgs): boolean => {
     !!args["uninstall-extension"] ||
     !!args["locate-extension"]
   )
-}
-
-/**
- * This is copy of OpenCommandPipeArgs from
- * ../../lib/vscode/src/vs/workbench/api/node/extHostCLIServer.ts:15
- *
- * Arguments supported by Code's socket.  It can be used to perform actions from
- * the CLI in a running instance of Code (for example to open a file).
- *
- * TODO: Can we import this (and other types) directly?
- */
-export interface OpenCommandPipeArgs {
-  type: "open"
-  fileURIs?: string[]
-  folderURIs: string[]
-  forceNewWindow?: boolean
-  diffMode?: boolean
-  addMode?: boolean
-  gotoLineMode?: boolean
-  forceReuseWindow?: boolean
-  waitMarkerFilePath?: string
 }
 
 /**
@@ -76,7 +56,7 @@ export const runCodeCli = async (args: DefaultedArgs): Promise<void> => {
   }
 }
 
-export const openInExistingInstance = async (args: DefaultedArgs, socketPath: string): Promise<void> => {
+const openCommandPipeArgs = async (args: DefaultedArgs): Promise<OpenCommandPipeArgs & { fileURIs: string[] }> => {
   const pipeArgs: OpenCommandPipeArgs & { fileURIs: string[] } = {
     type: "open",
     folderURIs: [],
@@ -94,30 +74,33 @@ export const openInExistingInstance = async (args: DefaultedArgs, socketPath: st
     }
   }
   if (pipeArgs.forceNewWindow && pipeArgs.fileURIs.length > 0) {
-    logger.error("--new-window can only be used with folder paths")
-    process.exit(1)
+    throw new Error("--new-window can only be used with folder paths")
   }
   if (pipeArgs.folderURIs.length === 0 && pipeArgs.fileURIs.length === 0) {
-    logger.error("Please specify at least one file or folder")
-    process.exit(1)
+    throw new Error("Please specify at least one file or folder")
   }
-  const vscode = http.request(
-    {
-      path: "/",
-      method: "POST",
-      socketPath,
-    },
-    (response) => {
-      response.on("data", (message) => {
-        logger.debug("got message from Code", field("message", message.toString()))
-      })
-    },
-  )
-  vscode.on("error", (error: unknown) => {
-    logger.error("got error from Code", field("error", error))
+  return pipeArgs
+}
+
+export const openInExistingInstance = async (args: DefaultedArgs, socketPath: string): Promise<void> => {
+  await sendOpenCommand(socketPath, await openCommandPipeArgs(args))
+}
+
+export const queueOpenInExistingInstance = async (
+  args: DefaultedArgs,
+  sessionSocket: string,
+  requestKey: string,
+): Promise<void> => {
+  const pipeArgs = await openCommandPipeArgs(args)
+  const filePath = pipeArgs.fileURIs[0] || pipeArgs.folderURIs[0]
+  if (!filePath) {
+    throw new Error("Please specify a file or folder to queue")
+  }
+  await new EditorSessionManagerClient(sessionSocket).queueOpen({
+    filePath,
+    pipeArgs,
+    requestKey,
   })
-  vscode.write(JSON.stringify(pipeArgs))
-  vscode.end()
 }
 
 export const runCodeServer = async (

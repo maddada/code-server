@@ -1,7 +1,13 @@
 import { logger } from "@coder/logger"
 import { optionDescriptions, parse, readConfigFile, setDefaults, shouldOpenInExistingInstance } from "./cli"
 import { getVersionString, getVersionJsonString } from "./constants"
-import { openInExistingInstance, runCodeServer, runCodeCli, shouldSpawnCliProcess } from "./main"
+import {
+  openInExistingInstance,
+  queueOpenInExistingInstance,
+  runCodeServer,
+  runCodeCli,
+  shouldSpawnCliProcess,
+} from "./main"
 import { isChild, wrapper } from "./wrapper"
 
 async function entry(): Promise<void> {
@@ -49,6 +55,15 @@ async function entry(): Promise<void> {
   if (shouldSpawnCliProcess(args)) {
     logger.debug("Found VS Code arguments; spawning VS Code CLI")
     return runCodeCli(args)
+  }
+
+  if (cliArgs["queue-open"]) {
+    logger.debug("Queueing an open for the matching existing instance")
+    return queueOpenInExistingInstance(
+      args,
+      args["session-socket"],
+      cliArgs["open-request-key"] || "code-server-cli-open",
+    )
   }
 
   const socketPath = await shouldOpenInExistingInstance(cliArgs, args["session-socket"])

@@ -54,6 +54,8 @@ export interface UserProvidedCodeArgs {
   "disable-proxy"?: boolean
   "reconnection-grace-time"?: string
   "session-socket"?: string
+  "queue-open"?: boolean
+  "open-request-key"?: string
   "cookie-suffix"?: string
   "link-protection-trusted-domains"?: string[]
   // locale is used by both VS Code and code-server.
@@ -175,6 +177,14 @@ export const options: Options<Required<UserProvidedArgs>> = {
   },
   "session-socket": {
     type: "string",
+  },
+  "queue-open": {
+    type: "boolean",
+    description: "Queue an existing-instance file open until its matching workbench is ready.",
+  },
+  "open-request-key": {
+    type: "string",
+    description: "Replace an earlier queued file open with the same request key.",
   },
   "cookie-suffix": {
     type: "string",

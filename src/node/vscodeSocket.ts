@@ -32,6 +32,77 @@ interface GetSessionResponse {
   socketPath?: string
 }
 
+/** Arguments supported by a running Code workbench's CLI socket. */
+export interface OpenCommandPipeArgs {
+  type: "open"
+  fileURIs?: string[]
+  folderURIs: string[]
+  forceNewWindow?: boolean
+  diffMode?: boolean
+  addMode?: boolean
+  gotoLineMode?: boolean
+  forceReuseWindow?: boolean
+  waitMarkerFilePath?: string
+}
+
+interface QueueOpenRequest {
+  filePath: string
+  pipeArgs: OpenCommandPipeArgs
+  requestKey: string
+}
+
+interface QueueOpenResponse {
+  status: "opened" | "replaced"
+}
+
+interface PendingQueueOpenRequest extends QueueOpenRequest {
+  settle(status: QueueOpenResponse["status"]): void
+}
+
+function isQueueOpenRequest(value: unknown): value is QueueOpenRequest {
+  if (!value || typeof value !== "object") {
+    return false
+  }
+  const request = value as Partial<QueueOpenRequest>
+  return (
+    typeof request.filePath === "string" &&
+    request.filePath.length > 0 &&
+    typeof request.requestKey === "string" &&
+    request.requestKey.length > 0 &&
+    request.requestKey.length <= 128 &&
+    request.pipeArgs?.type === "open" &&
+    Array.isArray(request.pipeArgs.folderURIs) &&
+    request.pipeArgs.folderURIs.every((uri) => typeof uri === "string") &&
+    (request.pipeArgs.fileURIs === undefined ||
+      (Array.isArray(request.pipeArgs.fileURIs) && request.pipeArgs.fileURIs.every((uri) => typeof uri === "string")))
+  )
+}
+
+export function sendOpenCommand(socketPath: string, pipeArgs: OpenCommandPipeArgs): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const request = http.request(
+      {
+        path: "/",
+        method: "POST",
+        socketPath,
+      },
+      (response) => {
+        response.resume()
+        response.on("end", () => {
+          if (response.statusCode && response.statusCode >= 200 && response.statusCode < 300) {
+            resolve()
+          } else {
+            reject(new Error(`Unexpected workbench response status: ${response.statusCode || "unknown"}`))
+          }
+        })
+      },
+    )
+    request.on("error", reject)
+    request.write(JSON.stringify(pipeArgs))
+    request.end()
+  })
+}
+
 export async function makeEditorSessionManagerServer(
   codeServerSocketPath: string,
   editorSessionManager: EditorSessionManager,
@@ -58,8 +129,16 @@ export async function makeEditorSessionManagerServer(
     if (!entry) {
       throw new HttpError("entry is required", HttpCode.BadRequest)
     }
-    editorSessionManager.addSession(entry)
+    await editorSessionManager.addSession(entry)
     res.status(200).send("session added")
+  })
+
+  router.post<{}, QueueOpenResponse | string, QueueOpenRequest | undefined>("/queue-open", async (req, res) => {
+    if (!isQueueOpenRequest(req.body)) {
+      throw new HttpError("a valid queued open request is required", HttpCode.BadRequest)
+    }
+    const status = await editorSessionManager.queueOpen(req.body)
+    res.status(200).json({ status })
   })
 
   router.post<{}, string, DeleteSessionRequest | undefined>("/delete-session", async (req, res) => {
@@ -88,13 +167,17 @@ export async function makeEditorSessionManagerServer(
 export class EditorSessionManager {
   // Map from socket path to EditorSessionEntry.
   private entries = new Map<string, EditorSessionEntry>()
+  private pendingOpenRequests = new Map<string, PendingQueueOpenRequest>()
+  private pendingOpenFlush: Promise<void> | undefined
+  private pendingOpenFlushAgain = false
 
-  addSession(entry: EditorSessionEntry): void {
+  async addSession(entry: EditorSessionEntry): Promise<void> {
     logger.debug(`Adding session to session registry: ${entry.socketPath}`)
     this.entries.set(entry.socketPath, entry)
+    await this.flushPendingOpenRequests()
   }
 
-  getCandidatesForFile(filePath: string): EditorSessionEntry[] {
+  getCandidatesForFile(filePath: string, matchingWorkspaceOnly = false): EditorSessionEntry[] {
     const matchCheckResults = new Map<string, boolean>()
 
     const checkMatch = (entry: EditorSessionEntry): boolean => {
@@ -106,7 +189,7 @@ export class EditorSessionManager {
       return result
     }
 
-    return Array.from(this.entries.values())
+    const candidates = Array.from(this.entries.values())
       .reverse() // Most recently registered first.
       .sort((a, b) => {
         // Matches first.
@@ -120,6 +203,7 @@ export class EditorSessionManager {
         }
         return 1
       })
+    return matchingWorkspaceOnly ? candidates.filter(checkMatch) : candidates
   }
 
   deleteSession(socketPath: string): void {
@@ -132,7 +216,18 @@ export class EditorSessionManager {
    * We also delete any sockets that we can't connect to.
    */
   async getConnectedSocketPath(filePath: string): Promise<string | undefined> {
-    const candidates = this.getCandidatesForFile(filePath)
+    return this.getConnectedSocketPathForCandidates(this.getCandidatesForFile(filePath))
+  }
+
+  async queueOpen(request: QueueOpenRequest): Promise<QueueOpenResponse["status"]> {
+    return new Promise((resolve) => {
+      this.pendingOpenRequests.get(request.requestKey)?.settle("replaced")
+      this.pendingOpenRequests.set(request.requestKey, { ...request, settle: resolve })
+      void this.flushPendingOpenRequests()
+    })
+  }
+
+  private async getConnectedSocketPathForCandidates(candidates: EditorSessionEntry[]): Promise<string | undefined> {
     let match: EditorSessionEntry | undefined = undefined
 
     for (const candidate of candidates) {
@@ -144,6 +239,39 @@ export class EditorSessionManager {
     }
 
     return match?.socketPath
+  }
+
+  private flushPendingOpenRequests(): Promise<void> {
+    if (this.pendingOpenFlush) {
+      this.pendingOpenFlushAgain = true
+      return this.pendingOpenFlush
+    }
+    this.pendingOpenFlush = (async () => {
+      do {
+        this.pendingOpenFlushAgain = false
+        for (const [requestKey, request] of Array.from(this.pendingOpenRequests.entries())) {
+          const socketPath = await this.getConnectedSocketPathForCandidates(
+            this.getCandidatesForFile(request.filePath, true),
+          )
+          if (!socketPath || this.pendingOpenRequests.get(requestKey) !== request) {
+            continue
+          }
+          try {
+            await sendOpenCommand(socketPath, request.pipeArgs)
+            if (this.pendingOpenRequests.get(requestKey) === request) {
+              this.pendingOpenRequests.delete(requestKey)
+              request.settle("opened")
+            }
+          } catch {
+            this.deleteSession(socketPath)
+            this.pendingOpenFlushAgain = true
+          }
+        }
+      } while (this.pendingOpenFlushAgain)
+    })().finally(() => {
+      this.pendingOpenFlush = undefined
+    })
+    return this.pendingOpenFlush
   }
 }
 
@@ -184,6 +312,45 @@ export class EditorSessionManagerClient {
       req.end()
     })
     return response.socketPath
+  }
+
+  async queueOpen(request: QueueOpenRequest): Promise<QueueOpenResponse["status"]> {
+    const response = await new Promise<QueueOpenResponse>((resolve, reject) => {
+      const req = http.request(
+        {
+          path: "/queue-open",
+          socketPath: this.codeServerSocketPath,
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json",
+          },
+        },
+        (res) => {
+          let rawData = ""
+          res.setEncoding("utf8")
+          res.on("data", (chunk) => {
+            rawData += chunk
+          })
+          res.on("end", () => {
+            try {
+              const result = JSON.parse(rawData)
+              if (res.statusCode === 200) {
+                resolve(result)
+              } else {
+                reject(new Error("Unexpected status code: " + res.statusCode))
+              }
+            } catch (error: unknown) {
+              reject(error)
+            }
+          })
+        },
+      )
+      req.on("error", reject)
+      req.write(JSON.stringify(request))
+      req.end()
+    })
+    return response.status
   }
 
   // Currently only used for tests.
