@@ -63,6 +63,7 @@ async function entry(): Promise<void> {
       args,
       args["session-socket"],
       cliArgs["open-request-key"] || "code-server-cli-open",
+      cliArgs["open-workspace-folder"],
     )
   }
 

@@ -90,6 +90,7 @@ export const queueOpenInExistingInstance = async (
   args: DefaultedArgs,
   sessionSocket: string,
   requestKey: string,
+  workspaceFolder?: string,
 ): Promise<void> => {
   const pipeArgs = await openCommandPipeArgs(args)
   const filePath = pipeArgs.fileURIs[0] || pipeArgs.folderURIs[0]
@@ -100,6 +101,7 @@ export const queueOpenInExistingInstance = async (
     filePath,
     pipeArgs,
     requestKey,
+    workspaceFolder,
   })
 }
 

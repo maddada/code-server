@@ -56,6 +56,7 @@ export interface UserProvidedCodeArgs {
   "session-socket"?: string
   "queue-open"?: boolean
   "open-request-key"?: string
+  "open-workspace-folder"?: string
   "cookie-suffix"?: string
   "link-protection-trusted-domains"?: string[]
   // locale is used by both VS Code and code-server.
@@ -185,6 +186,10 @@ export const options: Options<Required<UserProvidedArgs>> = {
   "open-request-key": {
     type: "string",
     description: "Replace an earlier queued file open with the same request key.",
+  },
+  "open-workspace-folder": {
+    type: "string",
+    description: "Deliver a queued file open to the workbench rooted at this folder, even when the file is outside it.",
   },
   "cookie-suffix": {
     type: "string",

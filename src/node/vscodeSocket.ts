@@ -49,6 +49,12 @@ interface QueueOpenRequest {
   filePath: string
   pipeArgs: OpenCommandPipeArgs
   requestKey: string
+  /**
+   * CDXC:CodeEditor 2026-09-11 WHY:
+   * A queued open used to be delivered only to a workbench whose workspace folder contained the file, so a file outside the project (a home-folder config, a file from another checkout) matched nothing and sat in the queue forever while the app had already announced "Opening file in Code view".
+   * The caller that knows which project's Code view it just switched to names that folder here, and the request is delivered to the workbench rooted at it regardless of where the file lives.
+   */
+  workspaceFolder?: string
 }
 
 interface QueueOpenResponse {
@@ -70,6 +76,8 @@ function isQueueOpenRequest(value: unknown): value is QueueOpenRequest {
     typeof request.requestKey === "string" &&
     request.requestKey.length > 0 &&
     request.requestKey.length <= 128 &&
+    (request.workspaceFolder === undefined ||
+      (typeof request.workspaceFolder === "string" && request.workspaceFolder.length > 0)) &&
     request.pipeArgs?.type === "open" &&
     Array.isArray(request.pipeArgs.folderURIs) &&
     request.pipeArgs.folderURIs.every((uri) => typeof uri === "string") &&
@@ -206,6 +214,18 @@ export class EditorSessionManager {
     return matchingWorkspaceOnly ? candidates.filter(checkMatch) : candidates
   }
 
+  /** Workbenches rooted at exactly this folder, most recently registered first. */
+  getCandidatesForWorkspaceFolder(workspaceFolder: string): EditorSessionEntry[] {
+    const normalize = (value: string): string => {
+      const trimmed = value.replace(/[\\/]+$/, "")
+      return trimmed.length > 0 ? trimmed : value
+    }
+    const wanted = normalize(workspaceFolder)
+    return Array.from(this.entries.values())
+      .reverse() // Most recently registered first.
+      .filter((entry) => entry.workspace.folders.some((folder) => normalize(folder.uri.path) === wanted))
+  }
+
   deleteSession(socketPath: string): void {
     logger.debug(`Deleting session from session registry: ${socketPath}`)
     this.entries.delete(socketPath)
@@ -251,7 +271,9 @@ export class EditorSessionManager {
         this.pendingOpenFlushAgain = false
         for (const [requestKey, request] of Array.from(this.pendingOpenRequests.entries())) {
           const socketPath = await this.getConnectedSocketPathForCandidates(
-            this.getCandidatesForFile(request.filePath, true),
+            request.workspaceFolder
+              ? this.getCandidatesForWorkspaceFolder(request.workspaceFolder)
+              : this.getCandidatesForFile(request.filePath, true),
           )
           if (!socketPath || this.pendingOpenRequests.get(requestKey) !== request) {
             continue
