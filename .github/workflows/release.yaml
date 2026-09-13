@@ -10,7 +10,7 @@ on:
     types:
       - closed
     branches:
-      - "update/**"
+      - main
 
 permissions:
   contents: write # For creating releases.
@@ -26,7 +26,9 @@ jobs:
   package-linux:
     name: ${{ format('linux-{0}', matrix.vscode_arch) }}
     runs-on: ubuntu-22.04
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    if: >-
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'pull_request_target' && github.event.pull_request.merged == true && startsWith(github.head_ref, 'update/'))
 
     strategy:
       matrix:
@@ -37,9 +39,6 @@ jobs:
           - npm_arch: arm64
             vscode_arch: arm64
             package_arch: arm64
-          - npm_arch: arm
-            vscode_arch: armhf
-            package_arch: armv7l
 
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -60,7 +59,7 @@ jobs:
 
     steps:
       - run: sudo apt update && sudo apt install -y libkrb5-dev
-      - uses: awalsh128/cache-apt-pkgs-action@2c09a5e66da6c8016428a2172bd76e5e4f14bb17 # latest
+      - uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # latest
         with:
           packages: quilt
           version: 1.0
@@ -70,16 +69,18 @@ jobs:
           curl -sSfL https://github.com/goreleaser/nfpm/releases/download/v2.3.1/nfpm_2.3.1_`uname -s`_`uname -m`.tar.gz | tar -C ~/.local/bin -zxv nfpm
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      - name: Strip update/ and v from tag
+      - name: Strip update/ and v from tag and set major version
         run: |
           version=${TAG#update/}
-          echo "VERSION=${version#v}" >> $GITHUB_ENV
+          version=${version#v}
+          version=4${version:1}
+          echo "VERSION=$version" >> $GITHUB_ENV
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           submodules: true
       - run: quilt push -a
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
         with:
           node-version-file: .node-version
           cache: npm
@@ -109,7 +110,7 @@ jobs:
       - run: |
           sed "/^## Unreleased/,/^## / ! d" CHANGELOG.md | head -n -2 | tail -n +3 > .cache/release-notes
         if: ${{ matrix.vscode_arch == 'x64' }}
-      - uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+      - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         if: ${{ matrix.vscode_arch == 'x64' }}
         with:
           draft: true
@@ -117,12 +118,12 @@ jobs:
           files: package.tar.gz
           tag_name: v${{ env.VERSION }}
           name: v${{ env.VERSION }}
-          body: .cache/release-notes
+          body_path: .cache/release-notes
 
       # Platform-specific release.
       - run: KEEP_MODULES=1 npm run release
       - run: npm run package
-      - uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+      - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           draft: true
           discussion_category_name: "📣 Announcements"
@@ -133,7 +134,9 @@ jobs:
   package-macos:
     name: ${{ matrix.vscode_target }}
     runs-on: ${{ matrix.os }}
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request_merged == true
+    if: >-
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'pull_request_target' && github.event.pull_request.merged == true && startsWith(github.head_ref, 'update/'))
     strategy:
       matrix:
         include:
@@ -144,7 +147,7 @@ jobs:
     env:
       VSCODE_TARGET: ${{ matrix.vscode_target }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TAG: ${{ inputs.version || github.ref_name }}
+      TAG: ${{ inputs.version || github.event.pull_request.head.ref || github.ref_name }}
       # Ensure native modules are built from source to avoid prebuilds.
       npm_config_build_from_source: true
 
@@ -160,16 +163,18 @@ jobs:
           curl -sSfL https://github.com/goreleaser/nfpm/releases/download/v2.3.1/nfpm_2.3.1_`uname -s`_`uname -m`.tar.gz | tar -C ~/.local/bin -zxv nfpm
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      - name: Strip update/ and v from tag
+      - name: Strip update/ and v from tag and set major version
         run: |
           version=${TAG#update/}
-          echo "VERSION=${version#v}" >> $GITHUB_ENV
+          version=${version#v}
+          version=4${version:1}
+          echo "VERSION=$version" >> $GITHUB_ENV
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           submodules: true
       - run: quilt push -a
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
         with:
           node-version-file: .node-version
           cache: npm
@@ -184,7 +189,7 @@ jobs:
       - run: npm run test:native
 
       - run: npm run package
-      - uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+      - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           draft: true
           discussion_category_name: "📣 Announcements"

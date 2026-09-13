@@ -80,22 +80,25 @@ nodeArch() {
 
 run-steps() {
   local -i failed=0
+  mkdir -p .cache
   rm -f .cache/checklist
   while (( $# )) ; do
     local name=$1 ; shift
     local fn=$1 ; shift
+    echo "$name..."
     # Only run if an earlier step has not failed.
+    # For all failed steps, write out an empty checkbox.
     if [[ $failed == 0 ]] ; then
-      echo "$name..."
       if $fn | indent ; then
         echo "- [X] $name" >> .cache/checklist
       else
         ((failed++))
+        echo "- [ ] $name" >> .cache/checklist
+        echo "Failed" | indent
       fi
-    fi
-    # For all failed steps, write out an empty checkbox.
-    if [[ $failed != 0 ]] ; then
+    else
       echo "- [ ] $name" >> .cache/checklist
+      echo "Skipped" | indent
     fi
   done
   if [[ $failed != 0 ]] ; then

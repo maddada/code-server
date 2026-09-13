@@ -23,4 +23,7 @@ display-language.diff
 trusted-domains.diff
 signature-verification.diff
 copilot.diff
+app-name.diff
+csp-hashes.diff
+ghostex-runtime.diff
 reh-ripgrep-bin.diff

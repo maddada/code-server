@@ -134,13 +134,13 @@ ensure-typescript-native-platform() {
   local tsgo_package
   tsgo_package=$(node <<'NODE'
 const packages = new Map([
-  ['darwin-x64', '@typescript/native-preview-darwin-x64'],
-  ['darwin-arm64', '@typescript/native-preview-darwin-arm64'],
-  ['linux-x64', '@typescript/native-preview-linux-x64'],
-  ['linux-arm64', '@typescript/native-preview-linux-arm64'],
-  ['linux-arm', '@typescript/native-preview-linux-arm'],
-  ['win32-x64', '@typescript/native-preview-win32-x64'],
-  ['win32-arm64', '@typescript/native-preview-win32-arm64'],
+  ['darwin-x64', '@typescript/typescript-darwin-x64'],
+  ['darwin-arm64', '@typescript/typescript-darwin-arm64'],
+  ['linux-x64', '@typescript/typescript-linux-x64'],
+  ['linux-arm64', '@typescript/typescript-linux-arm64'],
+  ['linux-arm', '@typescript/typescript-linux-arm'],
+  ['win32-x64', '@typescript/typescript-win32-x64'],
+  ['win32-arm64', '@typescript/typescript-win32-arm64'],
 ]);
 process.stdout.write(packages.get(`${process.platform}-${process.arch}`) ?? '');
 NODE
@@ -155,9 +155,9 @@ NODE
   fi
 
   local tsgo_version
-  tsgo_version=$(node -p "require('./node_modules/@typescript/native-preview/package.json').version")
+  tsgo_version=$(node -p "require('./node_modules/@typescript/native/package.json').version")
 
-  # CDXC:CodeServerRuntime 2026-06-08-14:52: VS Code core-ci invokes tsgo under the architecture-specific bundled Node during Ghostex release packaging. Install the matching TypeScript native preview package so cross-arch release builds do not depend on the host machine's arm64-only install tree.
+  # CDXC:CodeServerRuntime 2026-06-08-14:52: VS Code core-ci invokes tsgo under the architecture-specific bundled Node during Ghostex release packaging. Install the matching TypeScript 7 native package so cross-arch release builds do not depend on the host machine's arm64-only install tree.
   install-npm-tarball "$tsgo_package" "$tsgo_version" "node_modules/$tsgo_package"
 }
 

@@ -10,23 +10,7 @@ Index: code-server/lib/vscode/src/vs/base/common/network.ts
 ===================================================================
 --- code-server.orig/lib/vscode/src/vs/base/common/network.ts
 +++ code-server/lib/vscode/src/vs/base/common/network.ts
-@@ -197,8 +197,13 @@ class RemoteAuthoritiesImpl {
- 		this._delegate = delegate;
- 	}
- 
--	setServerRootPath(product: { quality?: string; commit?: string }, serverBasePath: string | undefined): void {
--		this._serverRootPath = paths.posix.join(serverBasePath ?? '/', getServerProductSegment(product));
-+	setServerRootPath(product: { quality?: string; commit?: string; serverProductSegment?: string }, serverBasePath: string | undefined): void {
-+		/**
-+		 * CDXC:EditorPanes 2026-05-30-08:04:
-+		 * Embedded Ghostex VS Code panes must fetch grammars, snippets, themes, and file-icon resources from the same product segment mounted by the server.
-+		 * Prefer the server-supplied segment so browser fallback product metadata cannot recompute `oss-dev` while the server is serving `stable-dev`.
-+		 */
-+		this._serverRootPath = paths.posix.join(serverBasePath ?? '/', product.serverProductSegment ?? getServerProductSegment(product));
- 	}
- 
- 	getServerRootPath(): string {
-@@ -245,7 +245,9 @@ class RemoteAuthoritiesImpl {
+@@ -251,7 +251,9 @@ class RemoteAuthoritiesImpl {
  		return URI.from({
  			scheme: platform.isWeb ? this._preferredWebSchema : Schemas.vscodeRemoteResource,
  			authority: `${host}:${port}`,
@@ -52,8 +36,8 @@ Index: code-server/lib/vscode/src/vs/code/browser/workbench/workbench-dev.html
  
  		<!-- Disable pinch zooming -->
  		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no">
-@@ -27,9 +27,9 @@
- 		<meta id="vscode-workbench-builtin-extensions" data-settings="{{WORKBENCH_BUILTIN_EXTENSIONS}}">
+@@ -29,9 +29,9 @@
+ 		<meta id="vscode-workbench-css-modules" data-settings="{{WORKBENCH_DEV_CSS_MODULES}}">
  
  		<!-- Workbench Icon/Manifest/CSS -->
 -		<link rel="icon" href="/_static/src/browser/media/favicon-dark-support.svg" />
@@ -65,15 +49,15 @@ Index: code-server/lib/vscode/src/vs/code/browser/workbench/workbench-dev.html
  		<style id="vscode-css-modules" type="text/css" media="screen"></style>
  
  	</head>
-@@ -39,7 +39,7 @@
+@@ -41,7 +41,7 @@
  
  	<!-- Startup (do not modify order of script tags!) -->
- 	<script>
--		const baseUrl = new URL('{{WORKBENCH_WEB_BASE_URL}}', window.location.origin).toString();
-+		const baseUrl = new URL('{{WORKBENCH_WEB_BASE_URL}}', window.location).toString();
+ 	<script nonce="{{WORKBENCH_SCRIPT_NONCE}}">
+-		const baseUrl = new URL(document.getElementById('vscode-workbench-web-base-url').getAttribute('data-settings'), window.location.origin).toString();
++		const baseUrl = new URL(document.getElementById('vscode-workbench-web-base-url').getAttribute('data-settings'), window.location).toString();
  		globalThis._VSCODE_FILE_ROOT = baseUrl + '/out/';
  	</script>
- 	<script>
+ 	<script nonce="{{WORKBENCH_SCRIPT_NONCE}}">
 Index: code-server/lib/vscode/src/vs/code/browser/workbench/workbench.html
 ===================================================================
 --- code-server.orig/lib/vscode/src/vs/code/browser/workbench/workbench.html
@@ -89,7 +73,7 @@ Index: code-server/lib/vscode/src/vs/code/browser/workbench/workbench.html
  
  		<!-- Disable pinch zooming -->
  		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no">
-@@ -24,9 +24,9 @@
+@@ -25,9 +25,9 @@
  		<meta id="vscode-workbench-auth-session" data-settings="{{WORKBENCH_AUTH_SESSION}}">
  
  		<!-- Workbench Icon/Manifest/CSS -->
@@ -102,15 +86,15 @@ Index: code-server/lib/vscode/src/vs/code/browser/workbench/workbench.html
  		<link rel="stylesheet" href="{{WORKBENCH_WEB_BASE_URL}}/out/vs/code/browser/workbench/workbench.css">
  
  	</head>
-@@ -36,7 +36,7 @@
+@@ -37,7 +37,7 @@
  
  	<!-- Startup (do not modify order of script tags!) -->
- 	<script>
--		const baseUrl = new URL('{{WORKBENCH_WEB_BASE_URL}}', window.location.origin).toString();
-+		const baseUrl = new URL('{{WORKBENCH_WEB_BASE_URL}}', window.location).toString();
+ 	<script nonce="{{WORKBENCH_SCRIPT_NONCE}}">
+-		const baseUrl = new URL(document.getElementById('vscode-workbench-web-base-url').getAttribute('data-settings'), window.location.origin).toString();
++		const baseUrl = new URL(document.getElementById('vscode-workbench-web-base-url').getAttribute('data-settings'), window.location).toString();
  		globalThis._VSCODE_FILE_ROOT = baseUrl + '/out/';
  	</script>
- 	<script>
+ 	<script nonce="{{WORKBENCH_SCRIPT_NONCE}}">
 Index: code-server/lib/vscode/src/vs/platform/remote/browser/browserSocketFactory.ts
 ===================================================================
 --- code-server.orig/lib/vscode/src/vs/platform/remote/browser/browserSocketFactory.ts
@@ -127,30 +111,31 @@ Index: code-server/lib/vscode/src/vs/server/node/webClientServer.ts
 ===================================================================
 --- code-server.orig/lib/vscode/src/vs/server/node/webClientServer.ts
 +++ code-server/lib/vscode/src/vs/server/node/webClientServer.ts
-@@ -17,7 +17,7 @@ import { isLinux } from '../../base/comm
- import { ILogService, LogLevel } from '../../platform/log/common/log.js';
- import { IServerEnvironmentService } from './serverEnvironmentService.js';
- import { extname, dirname, join, normalize, posix, resolve } from '../../base/common/path.js';
--import { FileAccess, connectionTokenCookieName, connectionTokenQueryName, Schemas, builtinExtensionsPath } from '../../base/common/network.js';
-+import { FileAccess, connectionTokenCookieName, connectionTokenQueryName, Schemas, builtinExtensionsPath, getServerProductSegment } from '../../base/common/network.js';
- import { generateUuid } from '../../base/common/uuid.js';
- import { IProductService } from '../../platform/product/common/productService.js';
- import { ServerConnectionToken, ServerConnectionTokenType } from './serverConnectionToken.js';
-@@ -265,7 +265,9 @@ export class WebClientServer {
+@@ -146,7 +146,7 @@ export function createWorkbenchContentSe
+ 		'default-src \'self\';',
+ 		'img-src \'self\' https: data: blob:;',
+ 		'media-src \'self\';',
+-		`script-src 'self' 'unsafe-eval' ${nlsBaseUrl ?? ''} blob: 'nonce-${scriptNonce}' '${webWorkerExtensionHostIframeScriptSHA}' 'sha256-/r7rqQ+yrxt57sxLuQ6AMYcy/lUpvAIzHjIJt/OeLWU=' ${useTestResolver ? '' : `http://${remoteAuthority}`};`,  // the sha is the same as in src/vs/workbench/services/extensions/worker/webWorkerExtensionHostIframe.html
++		`script-src 'self' 'unsafe-eval' ${nlsBaseUrl ?? ''} blob: 'nonce-${scriptNonce}' '${webWorkerExtensionHostIframeScriptSHA}' 'sha256-/r7rqQ+yrxt57sxLuQ6AMYcy/lUpvAIzHjIJt/OeLWU=' ${useTestResolver ? '' : ``};`,  // the sha is the same as in src/vs/workbench/services/extensions/worker/webWorkerExtensionHostIframe.html
+ 		'child-src \'self\';',
+ 		`frame-src 'self' https://*.vscode-cdn.net data:;`,
+ 		'worker-src \'self\' data: blob:;',
+@@ -307,8 +307,10 @@ export class WebClientServer {
  		};
  
  		// Prefix routes with basePath for clients
--		const basePath = getFirstHeader('x-forwarded-prefix') || this._basePath;
 +		const rootBase = relativeRoot(getOriginalUrl(req))
 +		const vscodeBase = relativePath(getOriginalUrl(req))
-+		const basePath = vscodeBase || getFirstHeader('x-forwarded-prefix') || this._basePath;
+ 		const forwardedPrefix = getFirstHeader('x-forwarded-prefix');
+-		const basePath = forwardedPrefix && isSafeBasePath(forwardedPrefix) ? forwardedPrefix : this._basePath;
++		const basePath = vscodeBase || (forwardedPrefix && isSafeBasePath(forwardedPrefix) ? forwardedPrefix : this._basePath);
  
- 		const queryConnectionToken = parsedUrl.query[connectionTokenQueryName];
- 		if (typeof queryConnectionToken === 'string') {
-@@ -304,10 +306,14 @@ export class WebClientServer {
+ 		const queryConnectionTokens = parsedUrl.searchParams.getAll(connectionTokenQueryName);
+ 		if (queryConnectionTokens.length === 1) {
+@@ -345,10 +347,14 @@ export class WebClientServer {
  		};
  
- 		const useTestResolver = (!this._environmentService.isBuilt && this._environmentService.args['use-test-resolver']);
+ 		const useTestResolver = (!this._environmentService.isBuilt && !!this._environmentService.args['use-test-resolver']);
 +		// For now we are getting the remote authority from the client to avoid
 +		// needing specific configuration for reverse proxies to work.  Set this to
 +		// something invalid to make sure we catch code that is using this value
@@ -163,41 +148,26 @@ Index: code-server/lib/vscode/src/vs/server/node/webClientServer.ts
  		);
  		if (!remoteAuthority) {
  			return serveError(req, res, 400, `Bad request.`);
-@@ -354,6 +360,7 @@ export class WebClientServer {
+@@ -395,6 +401,7 @@ export class WebClientServer {
  
  		const productConfiguration: Partial<Mutable<IProductConfiguration>> = {
  			codeServerVersion: this._productService.codeServerVersion,
-+			/**
-+			 * CDXC:EditorPanes 2026-05-30-08:04:
-+			 * The embedded browser client must not infer the remote-resource route from partial product metadata.
-+			 * Send the exact server product segment so `vscode-remote-resource` URLs stay aligned with the mounted code-server route.
-+			 */
-+			serverProductSegment: getServerProductSegment(this._productService),
 +			rootEndpoint: rootBase,
  			embedderIdentifier: 'server-distro',
+ 			voiceWsUrl: this._productService.voiceWsUrl,
  			extensionsGallery: this._webExtensionResourceUrlTemplate && this._productService.extensionsGallery ? {
- 				...this._productService.extensionsGallery,
-@@ -407,7 +414,9 @@ export class WebClientServer {
- 			WORKBENCH_AUTH_SESSION: authSessionInfo ? asJSON(authSessionInfo) : '',
+@@ -446,7 +453,9 @@ export class WebClientServer {
  			WORKBENCH_WEB_BASE_URL: staticRoute,
  			WORKBENCH_NLS_URL,
--			WORKBENCH_NLS_FALLBACK_URL: `${staticRoute}/out/nls.messages.js`
-+			WORKBENCH_NLS_FALLBACK_URL: `${staticRoute}/out/nls.messages.js`,
+ 			WORKBENCH_NLS_FALLBACK_URL: `${staticRoute}/out/nls.messages.js`,
+-			WORKBENCH_SCRIPT_NONCE: scriptNonce
++			WORKBENCH_SCRIPT_NONCE: scriptNonce,
 +			BASE: rootBase,
 +			VS_BASE: basePath,
  		};
  
  		// DEV ---------------------------------------------------------------------------------------
-@@ -444,7 +453,7 @@ export class WebClientServer {
- 			'default-src \'self\';',
- 			'img-src \'self\' https: data: blob:;',
- 			'media-src \'self\';',
--			`script-src 'self' 'unsafe-eval' ${WORKBENCH_NLS_BASE_URL ?? ''} blob: 'nonce-1nline-m4p' ${this._getScriptCspHashes(data).join(' ')} '${webWorkerExtensionHostIframeScriptSHA}' 'sha256-/r7rqQ+yrxt57sxLuQ6AMYcy/lUpvAIzHjIJt/OeLWU=' ${useTestResolver ? '' : `http://${remoteAuthority}`};`,  // the sha is the same as in src/vs/workbench/services/extensions/worker/webWorkerExtensionHostIframe.html
-+			`script-src 'self' 'unsafe-eval' ${WORKBENCH_NLS_BASE_URL ?? ''} blob: 'nonce-1nline-m4p' ${this._getScriptCspHashes(data).join(' ')} '${webWorkerExtensionHostIframeScriptSHA}' 'sha256-/r7rqQ+yrxt57sxLuQ6AMYcy/lUpvAIzHjIJt/OeLWU=' ${useTestResolver ? '' : ``};`,  // the sha is the same as in src/vs/workbench/services/extensions/worker/webWorkerExtensionHostIframe.html
- 			'child-src \'self\';',
- 			`frame-src 'self' https://*.vscode-cdn.net data:;`,
- 			'worker-src \'self\' data: blob:;',
-@@ -517,3 +526,70 @@ export class WebClientServer {
+@@ -542,3 +551,70 @@ export class WebClientServer {
  		return void res.end(data);
  	}
  }
@@ -272,11 +242,10 @@ Index: code-server/lib/vscode/src/vs/base/common/product.ts
 ===================================================================
 --- code-server.orig/lib/vscode/src/vs/base/common/product.ts
 +++ code-server/lib/vscode/src/vs/base/common/product.ts
-@@ -66,6 +66,7 @@ export type ExtensionVirtualWorkspaceSup
+@@ -98,6 +98,7 @@ export interface IDictationRuntimeProduc
  
  export interface IProductConfiguration {
  	readonly codeServerVersion?: string
-+	readonly serverProductSegment?: string
 +	readonly rootEndpoint?: string
  
  	readonly version: string;
@@ -285,72 +254,6 @@ Index: code-server/lib/vscode/src/vs/code/browser/workbench/workbench.ts
 ===================================================================
 --- code-server.orig/lib/vscode/src/vs/code/browser/workbench/workbench.ts
 +++ code-server/lib/vscode/src/vs/code/browser/workbench/workbench.ts
-@@ -20,6 +20,7 @@ import { ISecretStorageProvider } from '
- import { isFolderToOpen, isWorkspaceToOpen } from '../../../platform/window/common/window.js';
- import type { IWorkbenchConstructionOptions, IWorkspace, IWorkspaceProvider } from '../../../workbench/browser/web.api.js';
- import { AuthenticationSessionInfo } from '../../../workbench/services/authentication/browser/authenticationService.js';
-+import { extractLocalHostUriMetaDataForPortMapping, TunnelOptions, TunnelCreationOptions } from '../../../platform/tunnel/common/tunnel.js';
- import type { IURLCallbackProvider } from '../../../workbench/services/url/browser/urlService.js';
- import { create } from '../../../workbench/workbench.web.main.internal.js';
- 
-@@ -190,9 +191,58 @@ class ServerKeyedAESCrypto implements IS
- 	}
- }
- 
-+const localStorageSecretStorageKey = 'secrets.provider';
-+
-+type RemoteSecretStorageResponse = {
-+	value?: string;
-+	keys?: string[];
-+};
-+
-+class RemoteSecretStorageProvider implements ISecretStorageProvider {
-+
-+	type: 'in-memory' | 'persisted' | 'unknown' = 'persisted';
-+
-+	constructor(
-+		private readonly endpoint: string,
-+	) { }
-+
-+	async get(key: string): Promise<string | undefined> {
-+		const response = await this.request({ op: 'get', key });
-+		return response.value;
-+	}
-+
-+	async set(key: string, value: string): Promise<void> {
-+		await this.request({ op: 'set', key, value });
-+	}
-+
-+	async delete(key: string): Promise<void> {
-+		await this.request({ op: 'delete', key });
-+	}
-+
-+	async keys(): Promise<string[]> {
-+		const response = await this.request({ op: 'keys' });
-+		return response.keys ?? [];
-+	}
-+
-+	private async request(body: Record<string, string>): Promise<RemoteSecretStorageResponse> {
-+		const res = await fetch(this.endpoint, {
-+			body: JSON.stringify(body),
-+			credentials: 'include',
-+			headers: { 'Content-Type': 'application/json' },
-+			method: 'POST',
-+		});
-+		if (!res.ok) {
-+			throw new Error(`Secret storage request failed: ${res.status} ${res.statusText}`);
-+		}
-+		return res.json();
-+	}
-+}
-+
- export class LocalStorageSecretStorageProvider implements ISecretStorageProvider {
- 
--	private readonly storageKey = 'secrets.provider';
-+	private readonly storageKey = localStorageSecretStorageKey;
- 
- 	private secretsPromise: Promise<Record<string, string>>;
- 
 @@ -339,7 +339,8 @@ class LocalStorageURLCallbackProvider ex
  			this.startListening();
  		}
@@ -361,7 +264,7 @@ Index: code-server/lib/vscode/src/vs/code/browser/workbench/workbench.ts
  	}
  
  	private startListening(): void {
-@@ -584,17 +585,6 @@ class WorkspaceProvider implements IWork
+@@ -590,17 +591,6 @@ class WorkspaceProvider implements IWork
  	}
  }
  
@@ -379,70 +282,17 @@ Index: code-server/lib/vscode/src/vs/code/browser/workbench/workbench.ts
  (function () {
  
  	// Find config by checking for DOM
-@@ -604,8 +595,19 @@ function readCookie(name: string): strin
+@@ -610,8 +600,8 @@ function readCookie(name: string): strin
  	if (!configElement || !configElementAttribute) {
  		throw new Error('Missing web configuration element');
  	}
 -	const config: IWorkbenchConstructionOptions & { folderUri?: UriComponents; workspaceUri?: UriComponents; callbackRoute: string } = JSON.parse(configElementAttribute);
 -	const secretStorageKeyPath = readCookie('vscode-secret-key-path');
 +	const config: IWorkbenchConstructionOptions & { folderUri?: UriComponents; workspaceUri?: UriComponents; callbackRoute: string } = { ...JSON.parse(configElementAttribute), remoteAuthority: location.host }
-+	/*
-+	 * CDXC:GitHubAuthentication 2026-05-17-02:48:
-+	 * Embedded code-server must keep GitHub OAuth sessions across ghostex restarts without persisting tokens in browser origin storage.
-+	 * Use a same-origin server-side secret-storage endpoint backed by the persistent --user-data-dir because the browser workbench otherwise falls back to in-memory storage when no embedder provider is supplied.
-+	 * Clear stale browser-side secret payloads from the earlier localStorage-backed implementation so GitHub tokens are not retained in CEF origin storage.
-+	 */
-+	const secretStorageKeyPath: string | undefined = undefined;
-+	const remoteSecretStoragePath = (window.location.pathname.replace(/\/?$/, '/') + '.code-server-secret-storage').replace(/\/\/+/g, '/');
-+	if (config.remoteAuthority) {
-+		localStorage.removeItem(localStorageSecretStorageKey);
-+	}
++	const secretStorageKeyPath = (window.location.pathname + "/mint-key").replace(/\/\/+/g, "/");
  	const secretStorageCrypto = secretStorageKeyPath && ServerKeyedAESCrypto.supported()
  		? new ServerKeyedAESCrypto(secretStorageKeyPath) : new TransparentCrypto();
  
-@@ -616,8 +618,41 @@ function readCookie(name: string): strin
- 		settingsSyncOptions: config.settingsSyncOptions ? { enabled: config.settingsSyncOptions.enabled, } : undefined,
- 		workspaceProvider: WorkspaceProvider.create(config),
- 		urlCallbackProvider: new LocalStorageURLCallbackProvider(config.callbackRoute),
-+		resolveExternalUri: (uri: URI): Promise<URI> => {
-+			let resolvedUri = uri
-+			const localhostMatch = extractLocalHostUriMetaDataForPortMapping(resolvedUri)
-+			if (localhostMatch && resolvedUri.authority !== location.host) {
-+				if (config.productConfiguration && config.productConfiguration.proxyEndpointTemplate) {
-+					const renderedTemplate = config.productConfiguration.proxyEndpointTemplate
-+						.replace('{{port}}', localhostMatch.port.toString())
-+						.replace('{{host}}', window.location.host)
-+					resolvedUri = URI.parse(new URL(renderedTemplate, window.location.href).toString())
-+				} else {
-+					throw new Error(`Failed to resolve external URI: ${uri.toString()}. Could not determine base url because productConfiguration missing.`)
-+				}
-+			}
-+			// If not localhost, return unmodified.
-+			return Promise.resolve(resolvedUri)
-+		},
-+		tunnelProvider: {
-+			tunnelFactory: (tunnelOptions: TunnelOptions, tunnelCreationOptions: TunnelCreationOptions) => {
-+				const onDidDispose: Emitter<void> = new Emitter();
-+				let isDisposed = false;
-+				return Promise.resolve({
-+					remoteAddress: tunnelOptions.remoteAddress,
-+					localAddress: `localhost:${tunnelOptions.remoteAddress.port}`,
-+					onDidDispose: onDidDispose.event,
-+					dispose: () => {
-+						if (!isDisposed) {
-+							isDisposed = true;
-+							onDidDispose.fire();
-+						}
-+					}
-+				})
-+			}
-+		},
- 		secretStorageProvider: config.remoteAuthority && !secretStorageKeyPath
--			? undefined /* with a remote without embedder-preferred storage, store on the remote */
-+			? new RemoteSecretStorageProvider(remoteSecretStoragePath)
- 			: new LocalStorageSecretStorageProvider(secretStorageCrypto),
- 	});
- })();
 Index: code-server/lib/vscode/src/vs/platform/extensionResourceLoader/common/extensionResourceLoader.ts
 ===================================================================
 --- code-server.orig/lib/vscode/src/vs/platform/extensionResourceLoader/common/extensionResourceLoader.ts
