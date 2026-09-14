@@ -26,6 +26,7 @@ fix-bin-script() {
   # Fix Node path on Windows.
   sed -i.bak 's/^set ROOT_DIR=\(.*\)$/set ROOT_DIR=%~dp0..\\..\\..\\..\r\nset VSROOT_DIR=\1/g' "$script"
   sed -i.bak 's/%ROOT_DIR%\\out/%VSROOT_DIR%\\out/g' "$script"
+  sed -i.bak 's/%ROOT_DIR%\\node.exe/%ROOT_DIR%\\lib\\node.exe/g' "$script"
 
   chmod +x "$script"
   rm "$script.bak"
@@ -187,6 +188,19 @@ vscode-ripgrep-macho-arch() {
 }
 
 ensure-vscode-ripgrep-platform() {
+  if [[ "$OS" == windows ]]; then
+    # CDXC:CodeEditor 2026-09-14 WHY:
+    # Windows builds need rg.exe and cannot validate it with macOS lipo.
+    local windows_ripgrep="node_modules/@vscode/ripgrep/bin/rg.exe"
+    if [[ ! -f "$windows_ripgrep" ]]; then
+      node node_modules/@vscode/ripgrep/lib/postinstall.js --force
+    fi
+    [[ -f "$windows_ripgrep" ]] || {
+      echo "Windows ripgrep is missing: $windows_ripgrep" >&2
+      exit 1
+    }
+    return
+  fi
   local ripgrep_bin="node_modules/@vscode/ripgrep/bin/rg"
   local expected_arch
   expected_arch="$(vscode-ripgrep-macho-arch)"
@@ -289,7 +303,9 @@ main() {
   # CDXC:CodeServerRuntime 2026-06-08-12:17: Ghostex release builds invoke this code-server packaging path from the app build. Keep the nested VS Code checkout clean after successful builds by removing the temporary jq source copy that would otherwise leave code-server dirty before release commits.
   rm -f product.original.json
   cp product.json product.original.json # Since jq has no inline edit.
-  jq --slurp '.[0] * .[1]' product.original.json <(
+  # Native Windows jq cannot open Git Bash process-substitution paths under /proc.
+  {
+    cat product.original.json
     cat << EOF
   {
     "enableTelemetry": true,
@@ -328,7 +344,7 @@ main() {
     }
   }
 EOF
-  ) > product.json
+  } | jq --slurp '.[0] * .[1]' > product.json
 
 
   ensure-copilot-esbuild-platform
@@ -360,7 +376,7 @@ EOF
   # Set vars and fix paths.
   case $OS in
     windows)
-      fix-bin-script remote-cli/code.cmd
+      fix-bin-script remote-cli/code-server.cmd
       fix-bin-script helpers/browser.cmd
       ;;
     *)

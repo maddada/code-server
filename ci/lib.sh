@@ -49,7 +49,7 @@ if [[ ! ${ARCH-} ]]; then
   export ARCH
 fi
 
-if [[ ! ${OS-} ]]; then
+if [[ ! ${OS-} || $OS == Windows_NT ]]; then
   OS=$(os)
   export OS
 fi

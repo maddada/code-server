@@ -2,6 +2,7 @@ import { logger } from "@coder/logger"
 import express from "express"
 import * as http from "http"
 import * as path from "path"
+import { pathToFileURL } from "url"
 import { HttpCode, HttpError } from "../common/http"
 import { listen } from "./app"
 import { errorHandler } from "./routes/errors"
@@ -87,6 +88,15 @@ function isQueueOpenRequest(value: unknown): value is QueueOpenRequest {
 }
 
 export function sendOpenCommand(socketPath: string, pipeArgs: OpenCommandPipeArgs): Promise<void> {
+  // Windows drive letters must travel as file URIs or the workbench treats C: as a custom URI scheme.
+  if (process.platform === "win32") {
+    const fileURI = (value: string): string => (path.isAbsolute(value) ? pathToFileURL(value).toString() : value)
+    pipeArgs = {
+      ...pipeArgs,
+      folderURIs: pipeArgs.folderURIs.map(fileURI),
+      fileURIs: pipeArgs.fileURIs?.map(fileURI),
+    }
+  }
   return new Promise((resolve, reject) => {
     const request = http.request(
       {
@@ -172,6 +182,23 @@ export async function makeEditorSessionManagerServer(
   }
 }
 
+/**
+ * CDXC:CodeEditor 2026-09-14 WHY:
+ * Windows CLI paths use drive letters and backslashes while workbench URIs use /c:/ and forward slashes.
+ * Compare both in the same form so native file-open requests reach their project's editor.
+ */
+function normalizeWorkspacePath(value: string): string {
+  const normalized =
+    process.platform === "win32"
+      ? value
+          .replace(/^\/([a-z]:[\\/])/i, "$1")
+          .replace(/\\/g, "/")
+          .toLowerCase()
+      : value
+  const trimmed = normalized.replace(/[\\/]+$/, "")
+  return trimmed.length > 0 ? trimmed : normalized
+}
+
 export class EditorSessionManager {
   // Map from socket path to EditorSessionEntry.
   private entries = new Map<string, EditorSessionEntry>()
@@ -192,7 +219,12 @@ export class EditorSessionManager {
       if (matchCheckResults.has(entry.socketPath)) {
         return matchCheckResults.get(entry.socketPath)!
       }
-      const result = entry.workspace.folders.some((folder) => filePath.startsWith(folder.uri.path + path.sep))
+      const candidatePath = normalizeWorkspacePath(filePath)
+      const separator = process.platform === "win32" ? "/" : path.sep
+      const result = entry.workspace.folders.some((folder) => {
+        const folderPath = normalizeWorkspacePath(folder.uri.path)
+        return candidatePath.startsWith(folderPath.endsWith(separator) ? folderPath : folderPath + separator)
+      })
       matchCheckResults.set(entry.socketPath, result)
       return result
     }
@@ -216,14 +248,10 @@ export class EditorSessionManager {
 
   /** Workbenches rooted at exactly this folder, most recently registered first. */
   getCandidatesForWorkspaceFolder(workspaceFolder: string): EditorSessionEntry[] {
-    const normalize = (value: string): string => {
-      const trimmed = value.replace(/[\\/]+$/, "")
-      return trimmed.length > 0 ? trimmed : value
-    }
-    const wanted = normalize(workspaceFolder)
+    const wanted = normalizeWorkspacePath(workspaceFolder)
     return Array.from(this.entries.values())
       .reverse() // Most recently registered first.
-      .filter((entry) => entry.workspace.folders.some((folder) => normalize(folder.uri.path) === wanted))
+      .filter((entry) => entry.workspace.folders.some((folder) => normalizeWorkspacePath(folder.uri.path) === wanted))
   }
 
   deleteSession(socketPath: string): void {
