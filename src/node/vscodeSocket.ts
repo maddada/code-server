@@ -35,7 +35,7 @@ interface GetSessionResponse {
 
 /** Arguments supported by a running Code workbench's CLI socket. */
 export interface OpenCommandPipeArgs {
-  type: "open"
+  type: "open" | "browseFolder" | "promptEditor"
   fileURIs?: string[]
   folderURIs: string[]
   forceNewWindow?: boolean
@@ -64,7 +64,10 @@ interface QueueOpenResponse {
 
 interface PendingQueueOpenRequest extends QueueOpenRequest {
   settle(status: QueueOpenResponse["status"]): void
+  reject(error: Error): void
 }
+
+class WorkbenchOpenRejected extends Error {}
 
 function isQueueOpenRequest(value: unknown): value is QueueOpenRequest {
   if (!value || typeof value !== "object") {
@@ -79,15 +82,26 @@ function isQueueOpenRequest(value: unknown): value is QueueOpenRequest {
     request.requestKey.length <= 128 &&
     (request.workspaceFolder === undefined ||
       (typeof request.workspaceFolder === "string" && request.workspaceFolder.length > 0)) &&
-    request.pipeArgs?.type === "open" &&
+    (request.pipeArgs?.type === "open" ||
+      request.pipeArgs?.type === "browseFolder" ||
+      request.pipeArgs?.type === "promptEditor") &&
     Array.isArray(request.pipeArgs.folderURIs) &&
     request.pipeArgs.folderURIs.every((uri) => typeof uri === "string") &&
+    (request.pipeArgs.type !== "browseFolder" || request.pipeArgs.folderURIs.length === 1) &&
+    (request.pipeArgs.type !== "promptEditor" ||
+      (request.pipeArgs.fileURIs?.length === 1 &&
+        typeof request.pipeArgs.waitMarkerFilePath === "string" &&
+        request.pipeArgs.waitMarkerFilePath.length > 0)) &&
     (request.pipeArgs.fileURIs === undefined ||
       (Array.isArray(request.pipeArgs.fileURIs) && request.pipeArgs.fileURIs.every((uri) => typeof uri === "string")))
   )
 }
 
-export function sendOpenCommand(socketPath: string, pipeArgs: OpenCommandPipeArgs): Promise<void> {
+export function sendOpenCommand(
+  socketPath: string,
+  pipeArgs: OpenCommandPipeArgs,
+  signal?: AbortSignal,
+): Promise<"opened" | "reload"> {
   // Windows drive letters must travel as file URIs or the workbench treats C: as a custom URI scheme.
   if (process.platform === "win32") {
     const fileURI = (value: string): string => (path.isAbsolute(value) ? pathToFileURL(value).toString() : value)
@@ -103,14 +117,28 @@ export function sendOpenCommand(socketPath: string, pipeArgs: OpenCommandPipeArg
         path: "/",
         method: "POST",
         socketPath,
+        signal,
       },
       (response) => {
-        response.resume()
+        let body = ""
+        response.setEncoding("utf8")
+        response.on("data", (chunk: string) => {
+          if (body.length < 4096) body += chunk.slice(0, 4096 - body.length)
+        })
+        response.on("error", reject)
         response.on("end", () => {
           if (response.statusCode && response.statusCode >= 200 && response.statusCode < 300) {
-            resolve()
+            if (pipeArgs.type === "browseFolder") {
+              if (body === '"reload"') resolve("reload")
+              else if (body === '"opened"') resolve("opened")
+              else reject(new WorkbenchOpenRejected("The Code workbench did not confirm the folder reveal."))
+            } else {
+              resolve("opened")
+            }
           } else {
-            reject(new Error(`Unexpected workbench response status: ${response.statusCode || "unknown"}`))
+            reject(
+              new WorkbenchOpenRejected(`Unexpected workbench response status: ${response.statusCode || "unknown"}`),
+            )
           }
         })
       },
@@ -205,10 +233,20 @@ export class EditorSessionManager {
   private pendingOpenRequests = new Map<string, PendingQueueOpenRequest>()
   private pendingOpenFlush: Promise<void> | undefined
   private pendingOpenFlushAgain = false
+  private pendingOpenDelivery:
+    { request: PendingQueueOpenRequest; socketPath: string; controller: AbortController } | undefined
 
+  /**
+   * CDXC:CodeEditor 2026-09-24 WHY:
+   * A disconnected workbench keeps its CLI pipe alive during reconnection grace. A cold open can reach that pipe before the replacement registers, so registration must interrupt the old delivery instead of waiting behind its unanswered renderer command.
+   */
   async addSession(entry: EditorSessionEntry): Promise<void> {
     logger.debug(`Adding session to session registry: ${entry.socketPath}`)
     this.entries.set(entry.socketPath, entry)
+    const delivery = this.pendingOpenDelivery
+    if (delivery && this.getCandidatesForOpenRequest(delivery.request)[0]?.socketPath !== delivery.socketPath) {
+      delivery.controller.abort()
+    }
     await this.flushPendingOpenRequests()
   }
 
@@ -268,11 +306,20 @@ export class EditorSessionManager {
   }
 
   async queueOpen(request: QueueOpenRequest): Promise<QueueOpenResponse["status"]> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       this.pendingOpenRequests.get(request.requestKey)?.settle("replaced")
-      this.pendingOpenRequests.set(request.requestKey, { ...request, settle: resolve })
+      this.pendingOpenRequests.set(request.requestKey, { ...request, settle: resolve, reject })
+      if (this.pendingOpenDelivery?.request.requestKey === request.requestKey) {
+        this.pendingOpenDelivery.controller.abort()
+      }
       void this.flushPendingOpenRequests()
     })
+  }
+
+  private getCandidatesForOpenRequest(request: QueueOpenRequest): EditorSessionEntry[] {
+    return request.workspaceFolder
+      ? this.getCandidatesForWorkspaceFolder(request.workspaceFolder)
+      : this.getCandidatesForFile(request.filePath, true)
   }
 
   private async getConnectedSocketPathForCandidates(candidates: EditorSessionEntry[]): Promise<string | undefined> {
@@ -298,23 +345,43 @@ export class EditorSessionManager {
       do {
         this.pendingOpenFlushAgain = false
         for (const [requestKey, request] of Array.from(this.pendingOpenRequests.entries())) {
-          const socketPath = await this.getConnectedSocketPathForCandidates(
-            request.workspaceFolder
-              ? this.getCandidatesForWorkspaceFolder(request.workspaceFolder)
-              : this.getCandidatesForFile(request.filePath, true),
-          )
+          const socketPath = await this.getConnectedSocketPathForCandidates(this.getCandidatesForOpenRequest(request))
           if (!socketPath || this.pendingOpenRequests.get(requestKey) !== request) {
             continue
           }
+          if (this.getCandidatesForOpenRequest(request)[0]?.socketPath !== socketPath) {
+            this.pendingOpenFlushAgain = true
+            continue
+          }
+          const controller = new AbortController()
+          this.pendingOpenDelivery = { request, socketPath, controller }
           try {
-            await sendOpenCommand(socketPath, request.pipeArgs)
+            const result = await sendOpenCommand(socketPath, request.pipeArgs, controller.signal)
+            if (result === "reload") {
+              this.deleteSession(socketPath)
+              this.pendingOpenFlushAgain = true
+              continue
+            }
             if (this.pendingOpenRequests.get(requestKey) === request) {
               this.pendingOpenRequests.delete(requestKey)
               request.settle("opened")
             }
-          } catch {
+          } catch (error) {
+            if (controller.signal.aborted) {
+              this.pendingOpenFlushAgain = true
+              continue
+            }
+            if (error instanceof WorkbenchOpenRejected) {
+              if (this.pendingOpenRequests.get(requestKey) === request) {
+                this.pendingOpenRequests.delete(requestKey)
+                request.reject(error)
+              }
+              continue
+            }
             this.deleteSession(socketPath)
             this.pendingOpenFlushAgain = true
+          } finally {
+            this.pendingOpenDelivery = undefined
           }
         }
       } while (this.pendingOpenFlushAgain)
