@@ -10,6 +10,7 @@ import { plural } from "../../common/util"
 import { App } from "../app"
 import { AuthType, DefaultedArgs } from "../cli"
 import { commit, rootPath } from "../constants"
+import { ghostexKeyGate, takeGhostexKey } from "../ghostexKey"
 import { Heart } from "../heart"
 import { redirect } from "../http"
 import { CoderSettings, SettingsProvider } from "../settings"
@@ -85,6 +86,14 @@ export const register = async (
 
   app.router.use(common)
   app.wsRouter.use(common)
+
+  // Before every route, including /proxy and the static files (see ghostexKey.ts).
+  const ghostexKey = takeGhostexKey()
+  if (ghostexKey) {
+    const gate = ghostexKeyGate(ghostexKey)
+    app.router.use(gate)
+    app.wsRouter.use(gate)
+  }
 
   app.router.use(/.*/, async (req, res, next) => {
     // If we're handling TLS ensure all requests are redirected to HTTPS.
