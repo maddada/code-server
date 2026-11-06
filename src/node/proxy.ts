@@ -1,7 +1,9 @@
 import * as cookie from "cookie"
 import type { Request } from "express"
+import http from "http"
 import proxyServer from "http-proxy"
 import { getCookieSessionName, HttpCode } from "../common/http"
+import { GHOSTEX_KEY_COOKIE_PREFIX } from "./ghostexKey"
 
 export const proxy = proxyServer.createProxyServer({})
 
@@ -26,26 +28,38 @@ function identity<T>(val: T): T {
 
 // Strip the code-server cookie if it exists to avoid transmitting the cookie
 // to potentially malicious local ports.
-proxy.on("proxyReq", (preq, req) => {
+/*
+ * CDXC:CodeEditor 2026-11-06 WHY:
+ * The Ghostex launch-key cookies (`ghostex-code-key-<port>`) are as much a
+ * credential as the session cookie, so the proxy strips them from HTTP and
+ * WebSocket requests too. Upstream 4.145.0 only strips its own session cookie.
+ */
+function stripCookie(preq: http.ClientRequest, req: http.IncomingMessage) {
   if (req.headers.cookie) {
     const cookieSessionName = getCookieSessionName((req as Request).args["cookie-suffix"])
     // Encoding and decoding are no-ops; we just want to remove the token
     // without changing anything else about the cookies because not all
     // applications encode/decode the same way `cookie` here does.
+    const cookies: Record<string, string | undefined> = {
+      ...cookie.parseCookie(req.headers.cookie, { decode: identity }),
+      [cookieSessionName]: undefined,
+    }
+    for (const name of Object.keys(cookies)) {
+      if (name.startsWith(GHOSTEX_KEY_COOKIE_PREFIX)) {
+        cookies[name] = undefined
+      }
+    }
     preq.setHeader(
       "Cookie",
-      cookie.stringifyCookie(
-        {
-          ...cookie.parseCookie(req.headers.cookie, { decode: identity }),
-          [cookieSessionName]: undefined,
-        },
-        {
-          encode: identity,
-        },
-      ),
+      cookie.stringifyCookie(cookies, {
+        encode: identity,
+      }),
     )
   }
-})
+}
+
+proxy.on("proxyReq", stripCookie)
+proxy.on("proxyReqWs", stripCookie)
 
 // Intercept the response to rewrite absolute redirects against the base path.
 // Is disabled when the request has no base path which means /absproxy is in use.

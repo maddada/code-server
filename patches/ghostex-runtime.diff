@@ -1,7 +1,7 @@
 Ghostex embedded editor integration on top of the upstream code-server patch series.
 
 diff --git a/lib/vscode/product.json b/lib/vscode/product.json
-index 64e1c4d2c64..2e584d9c02f 100644
+index 64e1c4d2c64..4a9508fcc19 100644
 --- a/lib/vscode/product.json
 +++ b/lib/vscode/product.json
 @@ -1,12 +1,12 @@
@@ -98,16 +98,16 @@ index 64e1c4d2c64..2e584d9c02f 100644
 +		"ariaKey": "code-server"
 +	},
 +	"quality": "stable",
-+	"codeServerVersion": "4.143.1",
++	"codeServerVersion": "4.145.0",
 +	"documentationUrl": "https://go.microsoft.com/fwlink/?LinkID=533484#vscode",
 +	"keyboardShortcutsUrlMac": "https://go.microsoft.com/fwlink/?linkid=832143",
 +	"keyboardShortcutsUrlWin": "https://go.microsoft.com/fwlink/?linkid=832145"
  }
 diff --git a/lib/vscode/src/vs/base/common/network.ts b/lib/vscode/src/vs/base/common/network.ts
-index 6a39193c45e..08340717baa 100644
+index ce9ac224bad..96e1bdaa95d 100644
 --- a/lib/vscode/src/vs/base/common/network.ts
 +++ b/lib/vscode/src/vs/base/common/network.ts
-@@ -208,8 +208,13 @@ class RemoteAuthoritiesImpl {
+@@ -215,8 +215,13 @@ class RemoteAuthoritiesImpl {
  		this._delegate = delegate;
  	}
  
@@ -124,7 +124,7 @@ index 6a39193c45e..08340717baa 100644
  
  	getServerRootPath(): string {
 diff --git a/lib/vscode/src/vs/base/common/product.ts b/lib/vscode/src/vs/base/common/product.ts
-index d9df3f32768..90875fd9566 100644
+index 931ac9afb84..6fb972a2829 100644
 --- a/lib/vscode/src/vs/base/common/product.ts
 +++ b/lib/vscode/src/vs/base/common/product.ts
 @@ -98,6 +98,7 @@ export interface IDictationRuntimeProductConfig {
@@ -231,7 +231,7 @@ index 6b69d7c3d84..25520020ff9 100644
  	});
  })();
 diff --git a/lib/vscode/src/vs/platform/product/common/product.ts b/lib/vscode/src/vs/platform/product/common/product.ts
-index 477902d717c..907bd861c9a 100644
+index 477902d717c..6d20dbcb1c3 100644
 --- a/lib/vscode/src/vs/platform/product/common/product.ts
 +++ b/lib/vscode/src/vs/platform/product/common/product.ts
 @@ -88,8 +88,17 @@ else {
@@ -249,7 +249,7 @@ index 477902d717c..907bd861c9a 100644
 +		 */
  		Object.assign(product, {
 -			version: '1.104.0-dev',
-+			version: pkg?.version ?? '1.143.1-dev',
++			version: pkg?.version ?? '1.145.0-dev',
  			nameShort: 'Code - OSS Dev',
  			nameLong: 'Code - OSS Dev',
  			applicationName: 'code-oss',
@@ -266,7 +266,7 @@ index 7e31cd31c3a..eab3268d770 100644
  	/**
  	 * When set, the opened window is asked to open the chat session identified
 diff --git a/lib/vscode/src/vs/server/node/webClientServer.ts b/lib/vscode/src/vs/server/node/webClientServer.ts
-index a0391a1bd6e..76da302218b 100644
+index 3c702cd6e1a..09e93d8227c 100644
 --- a/lib/vscode/src/vs/server/node/webClientServer.ts
 +++ b/lib/vscode/src/vs/server/node/webClientServer.ts
 @@ -13,7 +13,7 @@ import { isLinux } from '../../base/common/platform.js';
@@ -587,7 +587,7 @@ index cf95db6aa79..334241a6ea4 100644
  		this.fileCopiedContextKey.set(stats.length > 0);
  		this.resourceCutContextKey.set(cut && stats.length > 0);
 diff --git a/lib/vscode/src/vs/workbench/services/host/browser/browserHostService.ts b/lib/vscode/src/vs/workbench/services/host/browser/browserHostService.ts
-index 3815713423e..1f642e437d5 100644
+index 4d7537cafe6..da47202acaf 100644
 --- a/lib/vscode/src/vs/workbench/services/host/browser/browserHostService.ts
 +++ b/lib/vscode/src/vs/workbench/services/host/browser/browserHostService.ts
 @@ -45,6 +45,7 @@ import { VSBuffer } from '../../../../base/common/buffer.js';

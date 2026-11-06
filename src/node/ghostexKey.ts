@@ -14,6 +14,11 @@ export const GHOSTEX_KEY_QUERY = "ghostex-key"
 export const GHOSTEX_KEY_ENV = "GHOSTEX_CODE_SERVER_KEY"
 
 /**
+ * The launch-key cookie's name before the port the browser used.
+ */
+export const GHOSTEX_KEY_COOKIE_PREFIX = "ghostex-code-key-"
+
+/**
  * Reads the per-launch key and removes it from the environment, so terminals
  * and the extension host this server starts never see it. Undefined when
  * Ghostex did not start this server with one.
@@ -65,7 +70,7 @@ export function ghostexKeyGate(key: string): express.RequestHandler {
     if (!host) {
       throw new HttpError("Forbidden", HttpCode.Forbidden)
     }
-    const cookieName = `ghostex-code-key-${host.port}`
+    const cookieName = `${GHOSTEX_KEY_COOKIE_PREFIX}${host.port}`
     if (matches(req.cookies?.[cookieName])) {
       return next()
     }

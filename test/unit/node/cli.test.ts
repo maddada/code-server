@@ -109,6 +109,8 @@ describe("parser", () => {
 
           "--disable-file-downloads",
 
+          "--disable-file-cache",
+
           "--disable-getting-started-override",
 
           "--disable-proxy",
@@ -140,6 +142,7 @@ describe("parser", () => {
       cert: {
         value: path.resolve("path/to/cert"),
       },
+      "disable-file-cache": true,
       "disable-file-downloads": true,
       "disable-getting-started-override": true,
       "disable-proxy": true,

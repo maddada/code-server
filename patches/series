@@ -26,6 +26,7 @@ copilot.diff
 app-name.diff
 remote-storage.diff
 remote-secret-storage.diff
+disable-file-cache.diff
 csp-hashes.diff
 ghostex-runtime.diff
 reh-ripgrep-bin.diff
